@@ -1,42 +1,74 @@
 import { useState } from "react"
 import { Upload, ImageIcon, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react'
 
-// Mock API function to simulate sending image to backend
-async function mockApiCall(imageFile) {
-  console.log("Sending image to mock API:", imageFile.name)
+// Real API functions to interact with Flask backend
+const API_BASE_URL = "http://localhost:5000/api" // Change this to your Raspberry Pi's address
+
+// Function to send image to API for analysis
+async function analyzeImage(imageFile, locationId = "default") {
+  console.log("Sending image to API:", imageFile.name)
   
-  // Create a FormData object (this is how you'd normally send files to an API)
+  // Create a FormData object to send the file
   const formData = new FormData()
-  formData.append('image', imageFile)
+  formData.append('file', imageFile)
+  formData.append('location_id', locationId)
   
-  // Simulate network delay (1-3 seconds)
-  const delay = 1000 + Math.random() * 2000
-  await new Promise(resolve => setTimeout(resolve, delay))
-  
-  // 10% chance of API error to test error handling
-  if (Math.random() < 0.1) {
-    throw new Error("API connection error")
-  }
-  
-  // Generate mock results as if they came from a CNN model
-  const totalSpots = Math.floor(Math.random() * 20) + 10 // 10-30 spots
-  const occupiedSpots = Math.floor(Math.random() * totalSpots)
-  const availableSpots = totalSpots - occupiedSpots
-  
-  // Generate a random map of occupied/available spots
-  const spotMap = Array(totalSpots).fill(false).map(() => Math.random() > 0.5)
-  
-  // Return mock API response
-  return {
-    success: true,
-    data: {
-      totalSpots,
-      availableSpots,
-      occupiedSpots,
-      spotMap,
-      confidence: Math.round(85 + Math.random() * 10), // 85-95% confidence
-      processingTime: Math.round(delay / 100) / 10 // Processing time in seconds
+  try {
+    const response = await fetch(`${API_BASE_URL}/analyze`, {
+      method: 'POST',
+      body: formData,
+      // No Content-Type header - fetch sets it automatically with boundary for FormData
+    })
+    
+    if (!response.ok) {
+      const errorData = await response.json()
+      throw new Error(errorData.error || "API request failed")
     }
+    
+    const data = await response.json()
+    return {
+      success: true,
+      data: {
+        totalSpots: data.total_spots,
+        availableSpots: data.empty_spots,
+        occupiedSpots: data.filled_spots,
+        confidence: data.occupancy_rate, // Using occupancy rate as confidence for now
+        processingTime: 1.2, // Could add processing time to API response
+        // Convert the spots_status array to a spotMap array of booleans
+        spotMap: data.spots_status.map(spot => spot.status === 'filled')
+      }
+    }
+  } catch (error) {
+    console.error("API error:", error)
+    throw error
+  }
+}
+
+// Function to get current parking status
+async function getParkingStatus(locationId = "default") {
+  try {
+    const response = await fetch(`${API_BASE_URL}/parking_status?location_id=${locationId}`)
+    
+    if (!response.ok) {
+      const errorData = await response.json()
+      throw new Error(errorData.error || "Failed to get parking status")
+    }
+    
+    return await response.json()
+  } catch (error) {
+    console.error("Failed to fetch parking status:", error)
+    throw error
+  }
+}
+
+// Check API health
+async function checkApiHealth() {
+  try {
+    const response = await fetch(`${API_BASE_URL}/health`)
+    return response.ok
+  } catch (error) {
+    console.error("API health check failed:", error)
+    return false
   }
 }
 
@@ -53,6 +85,16 @@ export function ParkingAnalyzer() {
   const [results, setResults] = useState(null)
   const [error, setError] = useState(null)
   const [apiStatus, setApiStatus] = useState(null) // 'sending', 'processing', 'complete', 'error'
+  const [apiHealthy, setApiHealthy] = useState(null) // null (unknown), true, or false
+
+  // Check API health on component mount
+  useState(() => {
+    const checkHealth = async () => {
+      const isHealthy = await checkApiHealth()
+      setApiHealthy(isHealthy)
+    }
+    checkHealth()
+  }, [])
 
   const handleImageUpload = (e) => {
     if (e.target.files && e.target.files[0]) {
@@ -78,7 +120,7 @@ export function ParkingAnalyzer() {
     setError(null)
     setApiStatus('sending')
     
-    // Simulate progress updates
+    // Simulate progress for better UX (since we can't get real-time progress from the API)
     const progressInterval = setInterval(() => {
       setProgress(prev => {
         if (prev < 30) {
@@ -96,8 +138,8 @@ export function ParkingAnalyzer() {
     }, 300)
     
     try {
-      // Call mock API
-      const response = await mockApiCall(file)
+      // Call real API with the image file
+      const response = await analyzeImage(file)
       
       // Update progress to 100%
       setProgress(100)
@@ -127,6 +169,13 @@ export function ParkingAnalyzer() {
 
   return (
     <div className="upload-container">
+      {apiHealthy === false && (
+        <div className="api-warning">
+          <AlertCircle className="warning-icon" />
+          <span>API server is not responding. Check your connection to the Raspberry Pi.</span>
+        </div>
+      )}
+      
       {!image ? (
         <div className="upload-box">
           <div className="upload-content">
@@ -168,15 +217,15 @@ export function ParkingAnalyzer() {
                 </button>
                 <button 
                   onClick={handleAnalyze} 
-                  disabled={isAnalyzing}
+                  disabled={isAnalyzing || apiHealthy === false}
                   className="primary-button"
                 >
                   {isAnalyzing ? (
                     <>
                       <RefreshCw className="button-icon animate-spin" />
-                      {apiStatus === 'sending' ? 'Sending...' : 
-                       apiStatus === 'processing' ? 'Processing...' : 
-                       'Completing...'}
+                      {apiStatus === 'sending' ? 'Sending to Raspberry Pi...' : 
+                       apiStatus === 'processing' ? 'Processing with CNN...' : 
+                       'Completing analysis...'}
                     </>
                   ) : (
                     'Analyze Image'
@@ -192,7 +241,7 @@ export function ParkingAnalyzer() {
                 {isAnalyzing && (
                   <div className="analysis-progress">
                     <div className="status-message">
-                      {apiStatus === 'sending' ? 'Sending image to API...' : 
+                      {apiStatus === 'sending' ? 'Sending image to Raspberry Pi...' : 
                        apiStatus === 'processing' ? 'Processing image through CNN model...' : 
                        'Finalizing results...'}
                     </div>
@@ -209,7 +258,7 @@ export function ParkingAnalyzer() {
                   <div className="error-container">
                     <AlertCircle className="error-icon" />
                     <div className="error-message">{error}</div>
-                    <p className="error-help">Please try again or use a different image.</p>
+                    <p className="error-help">Please try again or check if the Raspberry Pi is online.</p>
                   </div>
                 )}
                 
