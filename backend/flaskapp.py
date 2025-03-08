@@ -48,7 +48,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = fasterrcnn_resnet50_fpn(pretrained=False, num_classes=3)
 in_features = model.roi_heads.box_predictor.cls_score.in_features
 model.roi_heads.box_predictor = torchvision.models.detection.faster_rcnn.FastRCNNPredictor(in_features, 3)
-model.roi_heads.detections_per_img = 500  # Increase detection limit to 500
+model.roi_heads.detections_per_img = 500  # Ensure 500 detections per image
 model.load_state_dict(torch.load(MODEL_PATH, map_location=device, weights_only=True))
 model.eval()
 model.to(device)
@@ -57,31 +57,32 @@ model.to(device)
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def crop_image_if_needed(image, detections, threshold=100):
+def crop_image_if_needed(image, threshold=100, max_crops=1):
     """
     Crop the image to focus on the parking area if too many detections are found.
-    Returns the cropped image and original detections (no re-analysis here).
+    Returns the cropped image and requires re-analysis.
     """
-    if len(detections) <= threshold:
-        return image, detections
-    
-    # Find the highest y-coordinate among all detections
-    highest_y = 0
-    for detection in detections:
-        bbox = detection['bbox']
-        if bbox[3] > highest_y:
-            highest_y = bbox[3]
+    height, width = image.shape[:2]
+    highest_y = height  # Default to full height if no detections
+
+    # Find the highest y-coordinate among all detections (if available)
+    # Note: This function is called after initial detection, so detections should be passed
+    detections = request.environ.get('current_detections', [])
+    if detections and len(detections) > threshold:
+        for detection in detections:
+            bbox = detection['bbox']
+            if bbox[3] < highest_y:  # Lower y_max means higher on the image
+                highest_y = bbox[3]
     
     # Add padding to the crop
     padding = 10
-    height, width = image.shape[:2]
     crop_height = min(highest_y + padding, height)
     
-    # Crop the image
-    cropped_image = image[0:crop_height, 0:width]
-    
-    logger.info(f"Image cropped to height {crop_height} due to high detection count ({len(detections)})")
-    return cropped_image, detections  # Return original detections, no recursion
+    if crop_height < height:  # Only crop if there's a meaningful reduction
+        cropped_image = image[0:crop_height, 0:width]
+        logger.info(f"Image cropped to height {crop_height} due to high detection count ({len(detections)})")
+        return cropped_image, True
+    return image, False
 
 def log_detection_to_file(image_name, detections):
     with open(os.path.join(RESULTS_FOLDER, DETECTION_LOG), 'a') as f:
@@ -219,12 +220,36 @@ def analyze_parking_image(file_data):
                 'bbox': [int(x) for x in box]
             })
         
-        # Crop once if needed, then proceed with results
-        if len(detections) > 100:
-            cropped_image, detections = crop_image_if_needed(image, detections)
-            # Update image for overlay, but use existing detections
-            image = cropped_image
+        # Store initial detections in environment for cropping function
+        request.environ['current_detections'] = detections
         
+        # Crop if needed, then re-analyze once
+        crop_needed = False
+        if len(detections) > 100:
+            cropped_image, crop_needed = crop_image_if_needed(image)
+            if crop_needed:
+                image = cropped_image
+                input_tensor = preprocess_image(image)
+                with torch.no_grad():
+                    predictions = model(input_tensor)[0]
+
+                boxes = predictions['boxes'].cpu().numpy()
+                labels = predictions['labels'].cpu().numpy()
+                scores = predictions['scores'].cpu().numpy()
+
+                valid_indices = scores >= confidence_threshold
+                boxes = boxes[valid_indices]
+                labels = labels[valid_indices]
+                scores = scores[valid_indices]
+
+                detections = []
+                for i, (box, label, score) in enumerate(zip(boxes, labels, scores)):
+                    detections.append({
+                        'class_id': int(label),
+                        'confidence': float(score),
+                        'bbox': [int(x) for x in box]
+                    })
+
         total_spots = len(detections)
         filled_spots = sum(1 for d in detections if d['class_id'] == 2)  # 2 is "filled"
         empty_spots = sum(1 for d in detections if d['class_id'] == 1)  # 1 is "empty"
@@ -245,7 +270,7 @@ def analyze_parking_image(file_data):
             'detections': detections,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
-        logger.info(f"Image processed in {time.time() - start_time:.2f} seconds")
+        logger.info(f"Image processed in {time.time() - start_time:.2f} seconds with {total_spots} spots")
         return result
     except Exception as e:
         logger.error(f'Image analysis error: {str(e)}')
