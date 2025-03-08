@@ -8,8 +8,8 @@ import {
   CameraOff 
 } from "lucide-react";
 
-const API_BASE_URL = "http://192.168.137.135:5000/api"; // Raspberry Pi API
-const CAMERA_FEED_URL = "http://172.30.179.110:5001/video_feed"; // Camera simulator
+const API_BASE_URL = "http://192.168.137.135:5000/api";
+const CAMERA_FEED_URL = "http://172.30.179.110:5001/video_feed";
 
 function cn(...classes) {
   return classes.filter(Boolean).join(" ");
@@ -21,7 +21,7 @@ export function ParkingAnalyzer() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
-  const [apiHealthy, setApiHealthy] = useState(null); // null = checking, true = healthy, false = unhealthy
+  const [apiHealthy, setApiHealthy] = useState(null);
   const [liveMode, setLiveMode] = useState(false);
   const [liveResults, setLiveResults] = useState(null);
   const [streamSrc, setStreamSrc] = useState(null);
@@ -32,7 +32,6 @@ export function ParkingAnalyzer() {
   const streamReaderRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // Health check with retry logic
   useEffect(() => {
     const checkHealth = async (retries = 3, delay = 2000) => {
       for (let i = 0; i < retries; i++) {
@@ -52,24 +51,22 @@ export function ParkingAnalyzer() {
           await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
-      setApiHealthy(false); // Set to false only after all retries fail
+      setApiHealthy(false);
     };
     checkHealth();
   }, []);
 
-  // Video feed handling
   useEffect(() => {
     if (liveMode) {
       startVideoFeed();
     } else {
       stopVideoFeed();
     }
-    return () => stopVideoFeed(); // Cleanup on unmount
+    return () => stopVideoFeed();
   }, [liveMode]);
 
   const startVideoFeed = () => {
     setStreamSrc(CAMERA_FEED_URL);
-
     streamAbortControllerRef.current = new AbortController();
 
     fetch(CAMERA_FEED_URL, { 
@@ -96,11 +93,13 @@ export function ParkingAnalyzer() {
             if (dataMatch) {
               try {
                 const data = JSON.parse(dataMatch[1]);
-                setLiveResults({
-                  total_spots: data.total_spots || 0,
-                  empty_spots: data.empty_spots || 0,
-                  filled_spots: data.filled_spots || 0
-                });
+                if (data.total_spots !== undefined) {
+                  setLiveResults({
+                    total_spots: data.total_spots || 0,
+                    empty_spots: data.empty_spots || 0,
+                    filled_spots: data.filled_spots || 0
+                  });
+                }
               } catch (error) {
                 console.error("Error parsing results:", error);
               }
@@ -136,7 +135,6 @@ export function ParkingAnalyzer() {
     streamAbortControllerRef.current = null;
   };
 
-  // Image analysis functions
   async function analyzeImage(imageFile) {
     const formData = new FormData();
     formData.append("file", imageFile);
@@ -200,7 +198,6 @@ export function ParkingAnalyzer() {
 
   return (
     <div className="upload-container">
-      {/* API Health Warning */}
       {apiHealthy === null && (
         <div className="api-warning">
           <RefreshCw className="animate-spin warning-icon" />
@@ -214,7 +211,6 @@ export function ParkingAnalyzer() {
         </div>
       )}
 
-      {/* Live Feed Controls */}
       <div className="simulation-controls">
         <button
           onClick={() => setLiveMode(!liveMode)}
@@ -227,7 +223,6 @@ export function ParkingAnalyzer() {
       </div>
 
       {liveMode ? (
-        /* Live Video Feed Section */
         <div className="live-feed-container">
           <div className="live-feed-card">
             <img
@@ -235,6 +230,7 @@ export function ParkingAnalyzer() {
               src={streamSrc}
               alt="Live Feed"
               className="live-video"
+              onLoad={() => console.log("Stream image loaded")}
               onError={(e) => {
                 console.error("Image load failed:", e);
                 setLiveMode(false);
@@ -267,17 +263,19 @@ export function ParkingAnalyzer() {
                     />
                   ))}
                 </div>
+                <div className="live-note">
+                  <span>Updates every ~10 seconds</span>
+                </div>
               </div>
             ) : (
               <div className="feed-loading">
                 <RefreshCw className="animate-spin" />
-                <span>Connecting to live feed...</span>
+                <span>Analyzing first frame...</span>
               </div>
             )}
           </div>
         </div>
       ) : (
-        /* Image Upload Section */
         <div className="upload-section">
           {!image ? (
             <div className="upload-card">
