@@ -15,8 +15,8 @@ import base64
 from io import BytesIO
 
 # Import functions from newer.py
-from parking_spot_overlay import ParkingSpotOverlay  # Assuming this is still needed for overlay
-from newer import predict, crop, compile_data  # Import the functions from newer.py
+from parking_spot_overlay import ParkingSpotOverlay
+from newer import predict, crop, compile_data
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -36,7 +36,7 @@ DETECTION_LOG = 'detections.txt'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'mp4', 'avi', 'mov'}
 MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100MB
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, 'final_model.pth')  # Relative path for model
+MODEL_PATH = os.path.join(BASE_DIR, 'final_model.pth')
 
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
@@ -107,9 +107,10 @@ def analyze_video():
         return jsonify({'error': 'Invalid video format'}), 400
 
     try:
+        filename = secure_filename(file.filename)  # Sanitize original filename
         file_data = file.read()
         nparr = np.frombuffer(file_data, np.uint8)
-        results = process_video(nparr)
+        results = process_video(nparr, filename)
         
         for i, frame_result in enumerate(results):
             if 'frame_data' in frame_result and 'detections' in frame_result:
@@ -129,7 +130,7 @@ def analyze_video():
         logger.error(f'Video processing error: {str(e)}')
         return jsonify({'error': 'Failed to process video'}), 500
 
-def process_video(video_data):
+def process_video(video_data, original_filename):
     results = []
     cap = cv2.VideoCapture(video_data)
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -143,20 +144,21 @@ def process_video(video_data):
                 break
                 
             if frame_count % frame_interval == 0:
-                # Save frame to temporary file for processing with newer.py
-                temp_path = os.path.join(UPLOAD_FOLDER, f'temp_frame_{frame_count}.jpg')
+                # Use original filename with frame number for uniqueness
+                base_name = os.path.splitext(original_filename)[0]
+                temp_path = os.path.join(UPLOAD_FOLDER, f'{base_name}_frame_{frame_count}.jpg')
                 cv2.imwrite(temp_path, frame)
                 
                 # Use predict function from newer.py
                 all_predictions = predict(temp_path)
                 
-                # Crop if needed (as in newer.py)
+                # Crop if needed
                 if len(all_predictions) >= 100:
                     cropped_path = crop(temp_path, all_predictions)
                     cropped_predictions = predict(cropped_path)
                     all_predictions.extend(cropped_predictions)
                 
-                # Convert predictions to the format expected by the API
+                # Convert predictions to API format
                 detections = []
                 for pred in all_predictions:
                     detections.append({
@@ -190,6 +192,11 @@ def process_video(video_data):
                 }
                 results.append(frame_result)
                 
+                # Log detections with original filename + frame number
+                frame_name = f"{base_name}_frame_{frame_count}"
+                log_detection_to_file(frame_name, detections)
+                compile_data(temp_path, all_predictions)  # Use temp_path which includes original filename
+                
                 # Clean up temporary file
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
@@ -201,24 +208,25 @@ def process_video(video_data):
         
     return results
 
-def analyze_parking_image(file_data):
+def analyze_parking_image(file_data, original_filename):
     try:
         start_time = time.time()
         
-        # Save image data to a temporary file for processing with newer.py
-        temp_path = os.path.join(UPLOAD_FOLDER, 'temp_image.jpg')
+        # Use original filename for temporary file
+        base_name = os.path.splitext(original_filename)[0]
+        temp_path = os.path.join(UPLOAD_FOLDER, f'{base_name}.jpg')
         save_image_temp(file_data, temp_path)
         
         # Use predict function from newer.py
         all_predictions = predict(temp_path)
         
-        # Crop if needed (as in newer.py)
+        # Crop if needed
         if len(all_predictions) >= 100:
             cropped_path = crop(temp_path, all_predictions)
             cropped_predictions = predict(cropped_path)
             all_predictions.extend(cropped_predictions)
         
-        # Convert predictions to the format expected by the API
+        # Convert predictions to API format
         detections = []
         for pred in all_predictions:
             detections.append({
@@ -237,9 +245,9 @@ def analyze_parking_image(file_data):
             status = 'filled' if detection['class_id'] == 2 else 'empty'
             spots_status.append({'id': i + 1, 'status': status})
 
-        # Log detections to both detections.txt and info.txt
-        log_detection_to_file('current_image', detections)
-        compile_data(temp_path, all_predictions)  # Append to info.txt using newer.py function
+        # Log detections with original filename
+        log_detection_to_file(base_name, detections)
+        compile_data(temp_path, all_predictions)  # Use temp_path which includes original filename
 
         result = {
             'total_spots': int(total_spots),
@@ -297,8 +305,9 @@ def analyze_parking():
         return jsonify({'error': 'Invalid file type'}), 400
 
     try:
+        filename = secure_filename(file.filename)  # Sanitize original filename
         file_data = file.read()
-        results = analyze_parking_image(file_data)
+        results = analyze_parking_image(file_data, filename)
         
         return jsonify(results)
     except Exception as e:

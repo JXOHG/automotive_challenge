@@ -510,14 +510,15 @@ button.secondary:hover {
   overflow: hidden;
 }
 
+/* Replace the existing .preview-image style */
 .preview-image {
   width: 100%;
-  height: 400px;
-  object-fit: cover;
+  height: auto;
+  max-height: 600px; /* Optional: cap the height for larger screens */
+  object-fit: contain;
   display: block;
   border-radius: var(--radius) var(--radius) 0 0;
 }
-
 .preview-actions {
   display: flex;
   justify-content: space-between;
