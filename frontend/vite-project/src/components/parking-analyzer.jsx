@@ -8,7 +8,7 @@ import {
   CameraOff 
 } from "lucide-react";
 
-const API_BASE_URL = "http://172.30.179.110:5000/api"; // Update with Pi's IP
+const API_BASE_URL = "http://192.168.137.135:5000/api"; // Update with Pi's IP
 
 const CAMERA_FEED_URL = "http://172.30.179.110:5001/video_feed"; // Camera simulator with correct endpoint
 
