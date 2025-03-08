@@ -8,13 +8,13 @@ import json
 
 # Import your CNN model implementation
 # from model import ParkingSpotModel
-from flask_cors import CORS
+
 app = Flask(__name__)
-CORS(app)
 
 # Configuration
 UPLOAD_FOLDER = 'uploads'
 RESULTS_FOLDER = 'results'
+DETECTION_LOG = 'detections.txt'  # Text file to log all detections
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 
 # Create folders if they don't exist
@@ -25,7 +25,22 @@ os.makedirs(RESULTS_FOLDER, exist_ok=True)
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def analyze_parking_image(image_path):
+def log_detection_to_file(image_name, detections):
+    """
+    Log detection results to a text file in the format:
+    Image_name class_id confidence_score x_min y_min x_max y_max
+    
+    Args:
+        image_name: Name of the processed image
+        detections: List of dictionaries with detection results
+    """
+    with open(os.path.join(RESULTS_FOLDER, DETECTION_LOG), 'a') as f:
+        for detection in detections:
+            # Format: image_name class_id confidence x_min y_min x_max y_max
+            f.write(f"{image_name} {detection['class_id']} {detection['confidence']:.4f} "
+                   f"{detection['bbox'][0]} {detection['bbox'][1]} {detection['bbox'][2]} {detection['bbox'][3]}\n")
+
+def analyze_parking_image(image_path, filename):
     """
     Process the image with your CNN model to detect empty and filled parking spots
     Replace this with your actual model implementation
@@ -41,23 +56,52 @@ def analyze_parking_image(image_path):
     
     # Mock results for demonstration
     # In production, replace with actual model prediction
+    total_spots = 10
+    filled_spots = 7
+    empty_spots = 3
+    
+    # Generate mock detection results for each spot
+    # In a real implementation, these would come from your CNN model
+    spots_status = []
+    detections = []
+    
+    for i in range(1, total_spots + 1):
+        # Mock status for demonstration
+        status = 'filled' if i <= filled_spots else 'empty'
+        spots_status.append({'id': i, 'status': status})
+        
+        # Create mock bounding box coordinates and confidence
+        # In a real implementation, these would come from your model
+        if status == 'filled':
+            class_id = 1  # 1 for filled spot
+            confidence = 0.85 + (np.random.random() * 0.1)  # Random confidence between 0.85 and 0.95
+        else:
+            class_id = 0  # 0 for empty spot
+            confidence = 0.80 + (np.random.random() * 0.15)  # Random confidence between 0.80 and 0.95
+            
+        # Mock bounding box - in real implementation these would be actual coordinates
+        x_min = 100 + (i * 50)
+        y_min = 150
+        x_max = x_min + 45
+        y_max = y_min + 90
+        
+        # Add to detections list for text file logging
+        detections.append({
+            'class_id': class_id,
+            'confidence': confidence,
+            'bbox': [x_min, y_min, x_max, y_max]
+        })
+    
+    # Log detections to text file
+    log_detection_to_file(filename, detections)
+    
     results = {
-        'total_spots': 10,
-        'filled_spots': 7,
-        'empty_spots': 3,
-        'occupancy_rate': 70.0,
-        'spots_status': [
-            {'id': 1, 'status': 'filled'},
-            {'id': 2, 'status': 'filled'},
-            {'id': 3, 'status': 'empty'},
-            {'id': 4, 'status': 'filled'},
-            {'id': 5, 'status': 'filled'},
-            {'id': 6, 'status': 'empty'},
-            {'id': 7, 'status': 'filled'},
-            {'id': 8, 'status': 'filled'},
-            {'id': 9, 'status': 'filled'},
-            {'id': 10, 'status': 'empty'}
-        ],
+        'total_spots': total_spots,
+        'filled_spots': filled_spots,
+        'empty_spots': empty_spots,
+        'occupancy_rate': (filled_spots / total_spots) * 100,
+        'spots_status': spots_status,
+        'detections': detections,  # Include raw detection data in the JSON response
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }
     
@@ -103,7 +147,7 @@ def analyze_parking():
         file.save(file_path)
         
         # Process the image
-        results = analyze_parking_image(file_path)
+        results = analyze_parking_image(file_path, filename)
         
         # Save results for historical tracking
         result_filename = f"{location_id}_{timestamp}_results.json"
@@ -179,6 +223,43 @@ def get_current_status():
     }
     
     return jsonify(status)
+
+@app.route('/api/detections', methods=['GET'])
+def get_detections():
+    """
+    Get all detection records from the text file
+    
+    Query parameters:
+    - limit: Optional limit on number of records to return (default: 100)
+    
+    Returns:
+    - JSON with detection records
+    """
+    try:
+        limit = int(request.args.get('limit', 100))
+        
+        if not os.path.exists(os.path.join(RESULTS_FOLDER, DETECTION_LOG)):
+            return jsonify({'error': 'No detections recorded yet'}), 404
+        
+        detections = []
+        with open(os.path.join(RESULTS_FOLDER, DETECTION_LOG), 'r') as f:
+            lines = f.readlines()[-limit:]  # Get the last 'limit' lines
+            
+            for line in lines:
+                parts = line.strip().split()
+                if len(parts) >= 8:  # Make sure we have all required fields
+                    detection = {
+                        'image_name': parts[0],
+                        'class_id': int(parts[1]),
+                        'confidence': float(parts[2]),
+                        'bbox': [int(parts[3]), int(parts[4]), int(parts[5]), int(parts[6])]
+                    }
+                    detections.append(detection)
+        
+        return jsonify({'detections': detections, 'count': len(detections)})
+    
+    except Exception as e:
+        return jsonify({'error': f'Failed to retrieve detections: {str(e)}'}), 500
 
 # Main function to run the app
 if __name__ == '__main__':
