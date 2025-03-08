@@ -8,8 +8,11 @@ import json
 
 # Import your CNN model implementation
 # from model import ParkingSpotModel
-
+from flask_cors import CORS
 app = Flask(__name__)
+CORS(app, resources={r"/api/*": {"origins": "http://localhost:5173"}})  # Explicit origin
+
+
 
 # Configuration
 UPLOAD_FOLDER = 'uploads'
