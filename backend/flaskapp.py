@@ -17,6 +17,8 @@ import logging
 # Import the overlay module
 from parking_spot_overlay import ParkingSpotOverlay
 import base64
+from io import BytesIO
+
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -53,6 +55,47 @@ model.to(device)
 # Helper functions
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+# Add this function to handle image cropping when needed
+def crop_image_if_needed(image, detections, threshold=100):
+    """
+    Crop the image to focus on the parking area if too many detections are found.
+    This helps improve analysis performance and accuracy.
+    
+    Args:
+        image: The input image as numpy array
+        detections: List of detection dictionaries
+        threshold: Number of detections that trigger cropping
+        
+    Returns:
+        Tuple of (processed_image, processed_detections)
+    """
+    if len(detections) < threshold:
+        return image, detections
+    
+    # Find the highest y-coordinate among all detections
+    highest_y = 0
+    for detection in detections:
+        bbox = detection['bbox']
+        if bbox[3] > highest_y:
+            highest_y = bbox[3]
+    
+    # Add padding to the crop
+    padding = 10
+    height, width = image.shape[:2]
+    crop_height = min(highest_y + padding, height)
+    
+    # Crop the image
+    cropped_image = image[0:crop_height, 0:width]
+    
+    # Re-analyze the cropped image
+    logger.info(f"Image cropped to height {crop_height} due to high detection count ({len(detections)})")
+    
+    # Re-encode the cropped image
+    _, buffer = cv2.imencode('.jpg', cropped_image)
+    cropped_data = buffer.tobytes()
+    
+    # Re-analyze with the cropped image
+    return cropped_image, analyze_parking_image(cropped_data)['detections']
 
 def log_detection_to_file(image_name, detections):
     with open(os.path.join(RESULTS_FOLDER, DETECTION_LOG), 'a') as f:
@@ -160,6 +203,7 @@ def process_video(video_data):
         
     return results
 
+# Update the analyze_parking_image function to use cropping
 def analyze_parking_image(file_data):
     try:
         start_time = time.time()
@@ -169,6 +213,7 @@ def analyze_parking_image(file_data):
         if image is None:
             raise ValueError("Failed to decode image")
 
+        # First analysis pass
         input_tensor = preprocess_image(image)
         with torch.no_grad():
             predictions = model(input_tensor)[0]
@@ -183,20 +228,28 @@ def analyze_parking_image(file_data):
         labels = labels[valid_indices]
         scores = scores[valid_indices]
 
-        total_spots = len(boxes)
-        filled_spots = np.sum(labels == 1)  # Assuming 1 is "filled"
-        empty_spots = total_spots - filled_spots
-
-        spots_status = []
+        # Create detections list
         detections = []
         for i, (box, label, score) in enumerate(zip(boxes, labels, scores)):
-            status = 'filled' if label == 1 else 'empty'
-            spots_status.append({'id': i + 1, 'status': status})
             detections.append({
                 'class_id': int(label),
                 'confidence': float(score),
                 'bbox': [int(x) for x in box]
             })
+        
+        # Apply cropping if needed (more than 100 detections)
+        if len(detections) > 100:
+            image, detections = crop_image_if_needed(image, detections)
+            
+        # Count filled/empty spots
+        total_spots = len(detections)
+        filled_spots = sum(1 for d in detections if d['class_id'] == 1)  # Assuming 1 is "filled"
+        empty_spots = total_spots - filled_spots
+
+        spots_status = []
+        for i, detection in enumerate(detections):
+            status = 'filled' if detection['class_id'] == 1 else 'empty'
+            spots_status.append({'id': i + 1, 'status': status})
 
         log_detection_to_file('current_image', detections)
 
