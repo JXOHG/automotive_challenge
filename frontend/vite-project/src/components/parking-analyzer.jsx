@@ -8,61 +8,8 @@ import {
   CameraOff 
 } from "lucide-react";
 
-const API_BASE_URL = "http://192.168.2.32:5000/api";
-const SIMULATION_VIDEO = "/videos/parking-simulation.mp4";
-
-async function analyzeImage(imageFile, locationId = "default", signal) {
-  console.log("Starting API call to Flask backend...");
-  const formData = new FormData();
-  formData.append("file", imageFile);
-  formData.append("location_id", locationId);
-
-  try {
-    const response = await fetch(`${API_BASE_URL}/analyze`, {
-      method: "POST",
-      body: formData,
-      signal,
-    });
-
-    const contentType = response.headers.get('content-type');
-    if (!contentType?.includes('application/json')) {
-      const text = await response.text();
-      throw new Error(`Invalid response: ${text.slice(0, 100)}`);
-    }
-
-    const data = await response.json();
-    
-    if (!response.ok) {
-      throw new Error(data.error || `API request failed with status ${response.status}`);
-    }
-
-    return {
-      success: true,
-      data: {
-        totalSpots: data.total_spots,
-        availableSpots: data.empty_spots,
-        occupiedSpots: data.filled_spots,
-        confidence: data.occupancy_rate,
-        spotMap: data.spots_status?.map((spot) => spot.status === "filled") || [],
-      },
-    };
-  } catch (error) {
-    if (error.name === 'AbortError') {
-      console.log('Request aborted');
-      return;
-    }
-    throw error;
-  }
-}
-
-async function checkApiHealth() {
-  try {
-    const response = await fetch(`${API_BASE_URL}/health`);
-    return response.ok;
-  } catch (error) {
-    return false;
-  }
-}
+const API_BASE_URL = "http://192.168.137.135:5000/api"; // Update with Pi's IP
+const CAMERA_FEED_URL = "http://172.30.179.110:5001/video_feed"; // Camera simulator with correct endpoint
 
 function cn(...classes) {
   return classes.filter(Boolean).join(" ");
@@ -76,17 +23,21 @@ export function ParkingAnalyzer() {
   const [error, setError] = useState(null);
   const [apiHealthy, setApiHealthy] = useState(null);
   const [liveMode, setLiveMode] = useState(false);
-  
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const animationFrameRef = useRef(null);
-  const abortControllerRef = useRef(new AbortController());
+  const [liveResults, setLiveResults] = useState(null);
+  const [streamSrc, setStreamSrc] = useState(null); // For MJPEG stream source
 
+  const videoRef = useRef(null); // Ref for the img element
+  const abortControllerRef = useRef(new AbortController()); // For image upload cancellation
+  const streamAbortControllerRef = useRef(null); // For stream cancellation
+  const streamReaderRef = useRef(null); // To store the stream reader for cancellation
+  const fileInputRef = useRef(null); // Ref for the file input
+
+  // Health check for main API
   useEffect(() => {
     const checkHealth = async () => {
       try {
-        const isHealthy = await checkApiHealth();
-        setApiHealthy(isHealthy);
+        const response = await fetch(`${API_BASE_URL}/health`);
+        setApiHealthy(response.ok);
       } catch (error) {
         setApiHealthy(false);
       }
@@ -94,108 +45,134 @@ export function ParkingAnalyzer() {
     checkHealth();
   }, []);
 
+  // Video feed handling
   useEffect(() => {
     if (liveMode) {
-      startVideoProcessing();
+      startVideoFeed();
     } else {
-      stopVideoProcessing();
+      stopVideoFeed();
     }
-    
-    return () => stopVideoProcessing();
+    return () => stopVideoFeed(); // Cleanup on unmount
   }, [liveMode]);
 
-  const startVideoProcessing = () => {
-    if (!videoRef.current || !canvasRef.current) return;
+  const startVideoFeed = () => {
+    setStreamSrc(CAMERA_FEED_URL); // Set the MJPEG stream URL
 
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const context = canvas.getContext('2d');
+    // Initialize a new AbortController for the stream
+    streamAbortControllerRef.current = new AbortController();
 
-    video.addEventListener('play', () => {
-      const processFrame = async () => {
-        if (video.paused || video.ended) return;
+    // Parse the multipart response for JSON data
+    fetch(CAMERA_FEED_URL, { 
+      method: "GET",
+      signal: streamAbortControllerRef.current.signal // Attach abort signal
+    })
+      .then(response => {
+        const reader = response.body.getReader();
+        streamReaderRef.current = reader; // Store reader for cancellation
+        let chunks = "";
 
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
-        
-        canvas.toBlob(async (blob) => {
-          const frameFile = new File([blob], `frame_${Date.now()}.jpg`, {
-            type: 'image/jpeg',
-          });
-          
-          try {
-            const response = await analyzeImage(
-              frameFile,
-              "default",
-              abortControllerRef.current.signal
-            );
-            if (response?.data) {
-              setResults(response.data);
-              setError(null);
-            }
-          } catch (error) {
-            if (error.name !== 'AbortError') {
-              console.error("Frame analysis error:", error);
-            }
+        const processStream = ({ done, value }) => {
+          if (done || !liveMode) {
+            reader.cancel(); // Cancel reader if done or liveMode is false
+            return;
           }
-        }, 'image/jpeg');
 
-        animationFrameRef.current = requestAnimationFrame(processFrame);
-      };
+          chunks += new TextDecoder().decode(value);
+          const parts = chunks.split("--frame");
+          chunks = parts.pop(); // Keep incomplete part
 
-      setTimeout(() => {
-        animationFrameRef.current = requestAnimationFrame(processFrame);
-      }, 2000);
-    });
+          parts.forEach(part => {
+            const dataMatch = part.match(/data: ({.*?})\r\n\r\n/s);
+            if (dataMatch) {
+              try {
+                const data = JSON.parse(dataMatch[1]);
+                setLiveResults({
+                  total_spots: data.total_spots || 0,
+                  empty_spots: data.empty_spots || 0,
+                  filled_spots: data.filled_spots || 0
+                });
+              } catch (error) {
+                console.error("Error parsing results:", error);
+              }
+            }
+          });
 
-    video.play().catch(error => {
-      console.error("Video play failed:", error);
-      setLiveMode(false);
-    });
+          if (liveMode) {
+            reader.read().then(processStream); // Only continue if liveMode is true
+          }
+        };
+
+        reader.read().then(processStream);
+      })
+      .catch(error => {
+        if (error.name !== "AbortError") {
+          console.error("Stream failed:", error);
+          setLiveMode(false);
+        }
+      });
   };
 
-  const stopVideoProcessing = () => {
-    abortControllerRef.current.abort();
-    abortControllerRef.current = new AbortController();
-    if (videoRef.current) videoRef.current.pause();
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
+  const stopVideoFeed = () => {
+    setStreamSrc(null);
+    setLiveResults(null);
+
+    // Abort the fetch request and cancel the stream reader
+    if (streamAbortControllerRef.current) {
+      streamAbortControllerRef.current.abort();
     }
+    if (streamReaderRef.current) {
+      streamReaderRef.current.cancel(); // Cancel the reader explicitly
+      streamReaderRef.current = null;
+    }
+    streamAbortControllerRef.current = null; // Reset controller
   };
+
+  // Image analysis functions
+  async function analyzeImage(imageFile) {
+    const formData = new FormData();
+    formData.append("file", imageFile);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/analyze`, {
+        method: "POST",
+        body: formData,
+        signal: abortControllerRef.current.signal,
+      });
+
+      if (!response.ok) throw new Error("Analysis failed");
+      return await response.json();
+    } catch (error) {
+      if (error.name !== "AbortError") throw error;
+    }
+  }
 
   const handleImageUpload = (e) => {
     setLiveMode(false);
-    if (e.target.files?.[0]) {
-      const selectedFile = e.target.files[0];
-      setFile(selectedFile);
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        setImage(event.target?.result);
-        setResults(null);
-        setError(null);
-      };
-      reader.readAsDataURL(selectedFile);
-    }
+    setFile(file);
+    const reader = new FileReader();
+    reader.onload = (e) => setImage(e.target.result);
+    reader.readAsDataURL(file);
+    setResults(null);
+    setError(null);
   };
 
   const handleAnalyze = async () => {
-    setLiveMode(false);
-    if (!file) return;
-
     setIsAnalyzing(true);
     setError(null);
 
     try {
-      const response = await analyzeImage(
-        file,
-        "default",
-        abortControllerRef.current.signal
-      );
-      if (response?.data) {
-        setResults(response.data);
-      }
+      const data = await analyzeImage(file);
+      setResults({
+        totalSpots: data.total_spots,
+        availableSpots: data.empty_spots,
+        occupiedSpots: data.filled_spots,
+        spotMap: data.spots_status?.map(spot => spot.status === "filled") || [],
+      });
     } catch (error) {
-      setError(error.message || "Failed to analyze image");
+      setError(error.message || "Analysis failed");
     } finally {
       setIsAnalyzing(false);
     }
@@ -208,191 +185,180 @@ export function ParkingAnalyzer() {
     setError(null);
   };
 
+  const handleSelectImageClick = () => {
+    fileInputRef.current?.click(); // Trigger the hidden file input
+  };
+
   return (
     <div className="upload-container">
+      {/* API Health Warning */}
       {apiHealthy === false && (
         <div className="api-warning">
           <AlertCircle className="warning-icon" />
-          <span>API server is not responding. Check your connection to the Raspberry Pi.</span>
+          <span>Backend API is unavailable. Check Raspberry Pi connection.</span>
         </div>
       )}
 
+      {/* Live Feed Controls */}
       <div className="simulation-controls">
         <button
           onClick={() => setLiveMode(!liveMode)}
-          className={cn("simulation-button", liveMode && "active")}
+          className={cn("control-button", liveMode && "active")}
+          disabled={apiHealthy === false}
         >
           {liveMode ? <CameraOff size={18} /> : <Video size={18} />}
-          {liveMode ? " Stop Simulation" : " Start Live Simulation"}
+          {liveMode ? "Stop Live Feed" : "Start Live Feed"}
         </button>
       </div>
 
       {liveMode ? (
-        <div className="video-simulation">
-          <video
-            ref={videoRef}
-            src={SIMULATION_VIDEO}
-            muted
-            loop
-            style={{ display: 'none' }}
-          />
-          <canvas ref={canvasRef} style={{ display: 'none' }} />
-          
-          {results ? (
-            <div className="live-results">
-              <div className="live-preview">
-                <video
-                  src={SIMULATION_VIDEO}
-                  muted
-                  loop
-                  autoPlay
-                  className="simulation-video"
-                />
-                <div className="overlay-spots">
-                  {results.spotMap?.map((isOccupied, index) => (
+        /* Live Video Feed Section */
+        <div className="live-feed-container">
+          <div className="live-feed-card">
+            <img
+              ref={videoRef}
+              src={streamSrc}
+              alt="Live Feed"
+              className="live-video"
+              onError={(e) => {
+                console.error("Image load failed:", e);
+                setLiveMode(false);
+              }}
+            />
+            {liveResults ? (
+              <div className="live-results-overlay">
+                <div className="stats-panel">
+                  <div className="stat-item total">
+                    <span className="stat-label">Total Spots</span>
+                    <span className="stat-value">{liveResults.total_spots}</span>
+                  </div>
+                  <div className="stat-item available">
+                    <span className="stat-label">Available</span>
+                    <span className="stat-value">{liveResults.empty_spots}</span>
+                  </div>
+                  <div className="stat-item occupied">
+                    <span className="stat-label">Occupied</span>
+                    <span className="stat-value">{liveResults.filled_spots}</span>
+                  </div>
+                </div>
+                <div className="spot-map">
+                  {Array.from({ length: liveResults.total_spots }).map((_, index) => (
                     <div
                       key={index}
                       className={cn(
-                        "spot-indicator",
-                        isOccupied ? "occupied" : "available"
+                        "spot-marker",
+                        index < liveResults.filled_spots ? "occupied" : "available"
                       )}
-                      style={{
-                        left: `${(index % 5) * 20 + 5}%`,
-                        top: `${Math.floor(index / 5) * 15 + 20}%`
-                      }}
-                    >
-                      {index + 1}
-                    </div>
+                    />
                   ))}
                 </div>
               </div>
-              
-              <div className="stats-container">
-                <div className="stat-card total">
-                  <div className="stat-label">Total Spots</div>
-                  <div className="stat-value">{results.totalSpots}</div>
-                </div>
-                <div className="stat-card available">
-                  <div className="stat-label">Available</div>
-                  <div className="stat-value">{results.availableSpots}</div>
-                </div>
-                <div className="stat-card occupied">
-                  <div className="stat-label">Occupied</div>
-                  <div className="stat-value">{results.occupiedSpots}</div>
-                </div>
+            ) : (
+              <div className="feed-loading">
+                <RefreshCw className="animate-spin" />
+                <span>Connecting to live feed...</span>
               </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        /* Image Upload Section */
+        <div className="upload-section">
+          {!image ? (
+            <div className="upload-card">
+              <label className="upload-label">
+                <input
+                  ref={fileInputRef} // Add ref to the file input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageUpload}
+                  className="hidden-input"
+                />
+                <div className="upload-content">
+                  <ImageIcon className="upload-icon" />
+                  <span className="upload-title">Analyze Parking Lot</span>
+                  <span className="upload-subtitle">
+                    Upload an image or start the live feed
+                  </span>
+                  <button
+                    onClick={handleSelectImageClick} // Trigger file input click
+                    className="upload-button"
+                  >
+                    <Upload className="button-icon" />
+                    Select Image
+                  </button>
+                  <span className="file-types">JPEG, PNG up to 100MB</span>
+                </div>
+              </label>
             </div>
           ) : (
-            <div className="simulation-loading">
-              <RefreshCw className="animate-spin" />
-              <span>Initializing video simulation...</span>
+            <div className="analysis-section">
+              <div className="image-preview-card">
+                <img src={image} alt="Uploaded preview" className="preview-image" />
+                <div className="preview-actions">
+                  <button onClick={resetAnalysis} className="secondary-button">
+                    Upload New Image
+                  </button>
+                  <button
+                    onClick={handleAnalyze}
+                    disabled={isAnalyzing}
+                    className="primary-button"
+                  >
+                    {isAnalyzing ? (
+                      <>
+                        <RefreshCw className="animate-spin" />
+                        Analyzing...
+                      </>
+                    ) : (
+                      "Analyze Image"
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {(results || error) && (
+                <div className="analysis-results">
+                  {error ? (
+                    <div className="error-message">
+                      <AlertCircle className="error-icon" />
+                      {error}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="results-summary">
+                        <div className="summary-item total">
+                          <span>Total Spots</span>
+                          <strong>{results.totalSpots}</strong>
+                        </div>
+                        <div className="summary-item available">
+                          <span>Available</span>
+                          <strong>{results.availableSpots}</strong>
+                        </div>
+                        <div className="summary-item occupied">
+                          <span>Occupied</span>
+                          <strong>{results.occupiedSpots}</strong>
+                        </div>
+                      </div>
+                      <div className="spot-visualization">
+                        {results.spotMap.map((occupied, index) => (
+                          <div
+                            key={index}
+                            className={cn(
+                              "spot-box",
+                              occupied ? "occupied" : "available"
+                            )}
+                          >
+                            <span>{index + 1}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
-      ) : (
-        <>
-          {!image ? (
-            <div className="upload-box">
-              <div className="upload-content">
-                <ImageIcon className="upload-icon" />
-                <div className="upload-text">
-                  <label htmlFor="image-upload" className="upload-label">
-                    <span className="upload-message">Upload a parking lot image</span>
-                    <button className="upload-button">
-                      <Upload className="button-icon" />
-                      Select Image
-                    </button>
-                    <input
-                      id="image-upload"
-                      name="image-upload"
-                      type="file"
-                      accept="image/*"
-                      className="sr-only"
-                      onChange={handleImageUpload}
-                    />
-                  </label>
-                  <p className="upload-info">PNG, JPG, GIF up to 10MB</p>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="analysis-container">
-              <div className="image-preview-container">
-                <div className="image-preview-card">
-                  <div className="image-preview">
-                    <img src={image} alt="Parking lot" className="preview-image" />
-                  </div>
-                  <div className="preview-actions">
-                    <button onClick={resetAnalysis} className="secondary-button">
-                      Upload Different Image
-                    </button>
-                    <button
-                      onClick={handleAnalyze}
-                      disabled={isAnalyzing || apiHealthy === false}
-                      className="primary-button"
-                    >
-                      {isAnalyzing ? (
-                        <>
-                          <RefreshCw className="button-icon animate-spin" />
-                          Analyzing...
-                        </>
-                      ) : (
-                        "Analyze Image"
-                      )}
-                    </button>
-                  </div>
-                </div>
-
-                {(isAnalyzing || results || error) && (
-                  <div className="results-card">
-                    <h3 className="results-title">Analysis Results</h3>
-                    {error && (
-                      <div className="error-container">
-                        <AlertCircle className="error-icon" />
-                        <div className="error-message">{error}</div>
-                      </div>
-                    )}
-
-                    {results && (
-                      <div className="results-content">
-                        <div className="stats-container">
-                          <div className="stat-card total">
-                            <div className="stat-label">Total Spots</div>
-                            <div className="stat-value">{results.totalSpots}</div>
-                          </div>
-                          <div className="stat-card available">
-                            <div className="stat-label">Available</div>
-                            <div className="stat-value">{results.availableSpots}</div>
-                          </div>
-                          <div className="stat-card occupied">
-                            <div className="stat-label">Occupied</div>
-                            <div className="stat-value">{results.occupiedSpots}</div>
-                          </div>
-                        </div>
-                        <div className="spot-map-container">
-                          <h4 className="spot-map-title">Parking Spot Map</h4>
-                          <div className="spot-map">
-                            {results.spotMap?.map((isOccupied, index) => (
-                              <div
-                                key={index}
-                                className={cn(
-                                  "spot-indicator",
-                                  isOccupied ? "occupied" : "available"
-                                )}
-                              >
-                                {index + 1}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </>
       )}
     </div>
   );
