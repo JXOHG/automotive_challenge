@@ -5,18 +5,20 @@ import {
   RefreshCw, 
   AlertCircle, 
   Video, 
-  CameraOff 
+  CameraOff,
+  Eye,
+  EyeOff
 } from "lucide-react";
-
-const API_BASE_URL = "http://172.30.179.110:5000/api"; // Update with Pi's IP
-
-const CAMERA_FEED_URL = "http://172.30.179.110:5001/video_feed"; // Camera simulator with correct endpoint
+const API_BASE_URL = "http://192.168.137.135:5000/api";
+const CAMERA_FEED_URL = "http://172.30.179.110:5001/video_feed";
 
 function cn(...classes) {
   return classes.filter(Boolean).join(" ");
 }
 
 export function ParkingAnalyzer() {
+  // Add this state to the component:
+const [showOverlay, setShowOverlay] = useState(true);
   const [image, setImage] = useState(null);
   const [file, setFile] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -25,73 +27,82 @@ export function ParkingAnalyzer() {
   const [apiHealthy, setApiHealthy] = useState(null);
   const [liveMode, setLiveMode] = useState(false);
   const [liveResults, setLiveResults] = useState(null);
-  const [streamSrc, setStreamSrc] = useState(null); // For MJPEG stream source
+  const [streamSrc, setStreamSrc] = useState(null);
 
-  const videoRef = useRef(null); // Ref for the img element
-  const abortControllerRef = useRef(new AbortController()); // For image upload cancellation
-  const streamAbortControllerRef = useRef(null); // For stream cancellation
-  const streamReaderRef = useRef(null); // To store the stream reader for cancellation
-  const fileInputRef = useRef(null); // Ref for the file input
+  const videoRef = useRef(null);
+  const abortControllerRef = useRef(new AbortController());
+  const streamAbortControllerRef = useRef(null);
+  const streamReaderRef = useRef(null);
+  const fileInputRef = useRef(null);
 
-  // Health check for main API
   useEffect(() => {
-    const checkHealth = async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/health`);
-        setApiHealthy(response.ok);
-      } catch (error) {
-        setApiHealthy(false);
+    const checkHealth = async (retries = 3, delay = 2000) => {
+      for (let i = 0; i < retries; i++) {
+        try {
+          const response = await fetch(`${API_BASE_URL}/health`, { timeout: 5000 });
+          console.log(`Health check attempt ${i + 1}: Status ${response.status}`);
+          if (response.ok) {
+            setApiHealthy(true);
+            return;
+          } else {
+            console.warn(`Health check failed with status: ${response.status}`);
+          }
+        } catch (error) {
+          console.error(`Health check attempt ${i + 1} failed: ${error.message}`);
+        }
+        if (i < retries - 1) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
       }
+      setApiHealthy(false);
     };
     checkHealth();
   }, []);
 
-  // Video feed handling
   useEffect(() => {
     if (liveMode) {
       startVideoFeed();
     } else {
       stopVideoFeed();
     }
-    return () => stopVideoFeed(); // Cleanup on unmount
+    return () => stopVideoFeed();
   }, [liveMode]);
 
   const startVideoFeed = () => {
-    setStreamSrc(CAMERA_FEED_URL); // Set the MJPEG stream URL
-
-    // Initialize a new AbortController for the stream
+    setStreamSrc(CAMERA_FEED_URL);
     streamAbortControllerRef.current = new AbortController();
 
-    // Parse the multipart response for JSON data
     fetch(CAMERA_FEED_URL, { 
       method: "GET",
-      signal: streamAbortControllerRef.current.signal // Attach abort signal
+      signal: streamAbortControllerRef.current.signal
     })
       .then(response => {
         const reader = response.body.getReader();
-        streamReaderRef.current = reader; // Store reader for cancellation
+        streamReaderRef.current = reader;
         let chunks = "";
 
         const processStream = ({ done, value }) => {
           if (done || !liveMode) {
-            reader.cancel(); // Cancel reader if done or liveMode is false
+            reader.cancel();
             return;
           }
 
           chunks += new TextDecoder().decode(value);
           const parts = chunks.split("--frame");
-          chunks = parts.pop(); // Keep incomplete part
+          chunks = parts.pop();
 
           parts.forEach(part => {
             const dataMatch = part.match(/data: ({.*?})\r\n\r\n/s);
             if (dataMatch) {
               try {
                 const data = JSON.parse(dataMatch[1]);
-                setLiveResults({
-                  total_spots: data.total_spots || 0,
-                  empty_spots: data.empty_spots || 0,
-                  filled_spots: data.filled_spots || 0
-                });
+                if (data.total_spots !== undefined) {
+                  setLiveResults({
+                    total_spots: data.total_spots || 0,
+                    empty_spots: data.empty_spots || 0,
+                    filled_spots: data.filled_spots || 0
+                  });
+                }
               } catch (error) {
                 console.error("Error parsing results:", error);
               }
@@ -99,7 +110,7 @@ export function ParkingAnalyzer() {
           });
 
           if (liveMode) {
-            reader.read().then(processStream); // Only continue if liveMode is true
+            reader.read().then(processStream);
           }
         };
 
@@ -117,18 +128,16 @@ export function ParkingAnalyzer() {
     setStreamSrc(null);
     setLiveResults(null);
 
-    // Abort the fetch request and cancel the stream reader
     if (streamAbortControllerRef.current) {
       streamAbortControllerRef.current.abort();
     }
     if (streamReaderRef.current) {
-      streamReaderRef.current.cancel(); // Cancel the reader explicitly
+      streamReaderRef.current.cancel();
       streamReaderRef.current = null;
     }
-    streamAbortControllerRef.current = null; // Reset controller
+    streamAbortControllerRef.current = null;
   };
 
-  // Image analysis functions
   async function analyzeImage(imageFile) {
     const formData = new FormData();
     formData.append("file", imageFile);
@@ -163,7 +172,7 @@ export function ParkingAnalyzer() {
   const handleAnalyze = async () => {
     setIsAnalyzing(true);
     setError(null);
-
+  
     try {
       const data = await analyzeImage(file);
       setResults({
@@ -171,6 +180,8 @@ export function ParkingAnalyzer() {
         availableSpots: data.empty_spots,
         occupiedSpots: data.filled_spots,
         spotMap: data.spots_status?.map(spot => spot.status === "filled") || [],
+        // Store the overlay image
+        overlayImage: data.overlay_image ? `data:image/jpeg;base64,${data.overlay_image}` : null
       });
     } catch (error) {
       setError(error.message || "Analysis failed");
@@ -187,12 +198,17 @@ export function ParkingAnalyzer() {
   };
 
   const handleSelectImageClick = () => {
-    fileInputRef.current?.click(); // Trigger the hidden file input
+    fileInputRef.current?.click();
   };
 
   return (
     <div className="upload-container">
-      {/* API Health Warning */}
+      {apiHealthy === null && (
+        <div className="api-warning">
+          <RefreshCw className="animate-spin warning-icon" />
+          <span>Checking backend API status...</span>
+        </div>
+      )}
       {apiHealthy === false && (
         <div className="api-warning">
           <AlertCircle className="warning-icon" />
@@ -200,7 +216,6 @@ export function ParkingAnalyzer() {
         </div>
       )}
 
-      {/* Live Feed Controls */}
       <div className="simulation-controls">
         <button
           onClick={() => setLiveMode(!liveMode)}
@@ -213,14 +228,49 @@ export function ParkingAnalyzer() {
       </div>
 
       {liveMode ? (
-        /* Live Video Feed Section */
         <div className="live-feed-container">
           <div className="live-feed-card">
+          {liveResults && liveResults.overlay_image ? (
+    <img
+      ref={videoRef}
+      src={showOverlay ? `data:image/jpeg;base64,${liveResults.overlay_image}` : streamSrc}
+      alt="Live Feed"
+      className="live-video"
+      onLoad={() => console.log("Stream image loaded")}
+      onError={(e) => {
+        console.error("Image load failed:", e);
+        setLiveMode(false);
+      }}
+    />
+  ) : (
+    <img
+      ref={videoRef}
+      src={streamSrc}
+      alt="Live Feed"
+      className="live-video"
+      onLoad={() => console.log("Stream image loaded")}
+      onError={(e) => {
+        console.error("Image load failed:", e);
+        setLiveMode(false);
+      }}
+    />
+  )}
+  
+  {/* Add toggle overlay button */}
+  {liveResults && liveResults.overlay_image && (
+    <button 
+      onClick={() => setShowOverlay(!showOverlay)}
+      className="overlay-toggle-button"
+    >
+      {showOverlay ? "Hide Overlay" : "Show Overlay"}
+    </button>
+  )}
             <img
               ref={videoRef}
               src={streamSrc}
               alt="Live Feed"
               className="live-video"
+              onLoad={() => console.log("Stream image loaded")}
               onError={(e) => {
                 console.error("Image load failed:", e);
                 setLiveMode(false);
@@ -253,23 +303,25 @@ export function ParkingAnalyzer() {
                     />
                   ))}
                 </div>
+                <div className="live-note">
+                  <span>Updates every ~10 seconds</span>
+                </div>
               </div>
             ) : (
               <div className="feed-loading">
                 <RefreshCw className="animate-spin" />
-                <span>Connecting to live feed...</span>
+                <span>Analyzing first frame...</span>
               </div>
             )}
           </div>
         </div>
       ) : (
-        /* Image Upload Section */
         <div className="upload-section">
           {!image ? (
             <div className="upload-card">
               <label className="upload-label">
                 <input
-                  ref={fileInputRef} // Add ref to the file input
+                  ref={fileInputRef}
                   type="file"
                   accept="image/*"
                   onChange={handleImageUpload}
@@ -282,7 +334,7 @@ export function ParkingAnalyzer() {
                     Upload an image or start the live feed
                   </span>
                   <button
-                    onClick={handleSelectImageClick} // Trigger file input click
+                    onClick={handleSelectImageClick}
                     className="upload-button"
                   >
                     <Upload className="button-icon" />
@@ -295,27 +347,49 @@ export function ParkingAnalyzer() {
           ) : (
             <div className="analysis-section">
               <div className="image-preview-card">
-                <img src={image} alt="Uploaded preview" className="preview-image" />
-                <div className="preview-actions">
-                  <button onClick={resetAnalysis} className="secondary-button">
-                    Upload New Image
-                  </button>
-                  <button
-                    onClick={handleAnalyze}
-                    disabled={isAnalyzing}
-                    className="primary-button"
-                  >
-                    {isAnalyzing ? (
-                      <>
-                        <RefreshCw className="animate-spin" />
-                        Analyzing...
-                      </>
-                    ) : (
-                      "Analyze Image"
-                    )}
-                  </button>
-                </div>
-              </div>
+  <img 
+    src={showOverlay && results?.overlayImage ? results.overlayImage : image} 
+    alt="Uploaded preview" 
+    className="preview-image" 
+  />
+  <div className="preview-actions">
+    <button onClick={resetAnalysis} className="secondary-button">
+      Upload New Image
+    </button>
+    {results && results.overlayImage && (
+      <button 
+        onClick={() => setShowOverlay(!showOverlay)} 
+        className="toggle-button"
+      >
+        {showOverlay ? (
+          <>
+            <EyeOff size={16} />
+            Hide Overlay
+          </>
+        ) : (
+          <>
+            <Eye size={16} />
+            Show Overlay
+          </>
+        )}
+      </button>
+    )}
+    <button
+      onClick={handleAnalyze}
+      disabled={isAnalyzing || apiHealthy === false}
+      className="primary-button"
+    >
+      {isAnalyzing ? (
+        <>
+          <RefreshCw className="animate-spin" />
+          Analyzing...
+        </>
+      ) : (
+        "Analyze Image"
+      )}
+    </button>
+  </div>
+</div>
 
               {(results || error) && (
                 <div className="analysis-results">
