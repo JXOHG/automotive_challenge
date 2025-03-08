@@ -14,7 +14,6 @@ import torchvision
 from torchvision.models.detection import fasterrcnn_resnet50_fpn
 from torchvision.transforms import functional as F
 import logging
-# Import the overlay module
 from parking_spot_overlay import ParkingSpotOverlay
 import base64
 from io import BytesIO
@@ -24,7 +23,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder='public', static_url_path='')
-# Allow both localhost and the specific IP for the frontend
 CORS(app, resources={
     r"/api/*": {
         "origins": ["http://localhost:5173", "http://172.30.179.110:5173"]
@@ -45,9 +43,12 @@ app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(RESULTS_FOLDER, exist_ok=True)
 
-# Load the R-CNN model
+# Load the R-CNN model with increased detection limit
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = fasterrcnn_resnet50_fpn(pretrained=False, num_classes=3)
+in_features = model.roi_heads.box_predictor.cls_score.in_features
+model.roi_heads.box_predictor = torchvision.models.detection.faster_rcnn.FastRCNNPredictor(in_features, 3)
+model.roi_heads.detections_per_img = 500  # Increase detection limit to 500
 model.load_state_dict(torch.load(MODEL_PATH, map_location=device, weights_only=True))
 model.eval()
 model.to(device)
@@ -55,19 +56,10 @@ model.to(device)
 # Helper functions
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-# Add this function to handle image cropping when needed
+
 def crop_image_if_needed(image, detections, threshold=100):
     """
     Crop the image to focus on the parking area if too many detections are found.
-    This helps improve analysis performance and accuracy.
-    
-    Args:
-        image: The input image as numpy array
-        detections: List of detection dictionaries
-        threshold: Number of detections that trigger cropping
-        
-    Returns:
-        Tuple of (processed_image, processed_detections)
     """
     if len(detections) < threshold:
         return image, detections
@@ -87,14 +79,11 @@ def crop_image_if_needed(image, detections, threshold=100):
     # Crop the image
     cropped_image = image[0:crop_height, 0:width]
     
-    # Re-analyze the cropped image
-    logger.info(f"Image cropped to height {crop_height} due to high detection count ({len(detections)})")
-    
-    # Re-encode the cropped image
+    # Re-encode and re-analyze the cropped image
     _, buffer = cv2.imencode('.jpg', cropped_image)
     cropped_data = buffer.tobytes()
     
-    # Re-analyze with the cropped image
+    logger.info(f"Image cropped to height {crop_height} due to high detection count ({len(detections)})")
     return cropped_image, analyze_parking_image(cropped_data)['detections']
 
 def log_detection_to_file(image_name, detections):
@@ -114,10 +103,9 @@ limiter = Limiter(
     key_func=get_remote_address,
     default_limits=["500 per minute", "1000 per hour"]
 )
+
 # Initialize the overlay handler
 overlay_handler = ParkingSpotOverlay()
-
-
 
 # Error handlers
 @app.errorhandler(404)
@@ -160,7 +148,6 @@ def analyze_video():
         nparr = np.frombuffer(file_data, np.uint8)
         results = process_video(nparr)
         
-        # Add overlay to each frame result
         for i, frame_result in enumerate(results):
             if 'frame_data' in frame_result and 'detections' in frame_result:
                 overlay_image = overlay_handler.create_overlay_image(
@@ -195,7 +182,7 @@ def process_video(video_data):
                 _, buffer = cv2.imencode('.jpg', frame)
                 frame_data = buffer.tobytes()
                 frame_result = analyze_parking_image(frame_data)
-                frame_result['frame_data'] = frame_data  # Store frame data for overlay
+                frame_result['frame_data'] = frame_data
                 results.append(frame_result)
             
     finally:
@@ -203,7 +190,6 @@ def process_video(video_data):
         
     return results
 
-# Update the analyze_parking_image function to use cropping
 def analyze_parking_image(file_data):
     try:
         start_time = time.time()
@@ -213,7 +199,6 @@ def analyze_parking_image(file_data):
         if image is None:
             raise ValueError("Failed to decode image")
 
-        # First analysis pass
         input_tensor = preprocess_image(image)
         with torch.no_grad():
             predictions = model(input_tensor)[0]
@@ -228,7 +213,6 @@ def analyze_parking_image(file_data):
         labels = labels[valid_indices]
         scores = scores[valid_indices]
 
-        # Create detections list
         detections = []
         for i, (box, label, score) in enumerate(zip(boxes, labels, scores)):
             detections.append({
@@ -237,18 +221,17 @@ def analyze_parking_image(file_data):
                 'bbox': [int(x) for x in box]
             })
         
-        # Apply cropping if needed (more than 100 detections)
+        # Crop if more than 100 detections to focus on parking area
         if len(detections) > 100:
             image, detections = crop_image_if_needed(image, detections)
             
-        # Count filled/empty spots
         total_spots = len(detections)
-        filled_spots = sum(1 for d in detections if d['class_id'] == 1)  # Assuming 1 is "filled"
-        empty_spots = total_spots - filled_spots
+        filled_spots = sum(1 for d in detections if d['class_id'] == 2)  # 2 is "filled"
+        empty_spots = sum(1 for d in detections if d['class_id'] == 1)  # 1 is "empty"
 
         spots_status = []
         for i, detection in enumerate(detections):
-            status = 'filled' if detection['class_id'] == 1 else 'empty'
+            status = 'filled' if detection['class_id'] == 2 else 'empty'
             spots_status.append({'id': i + 1, 'status': status})
 
         log_detection_to_file('current_image', detections)
@@ -294,17 +277,14 @@ def analyze_parking():
 
     try:
         file_data = file.read()
-        # Store file data for overlay creation
         results = analyze_parking_image(file_data)
         
-        # Create overlay image
         overlay_image = overlay_handler.create_overlay_image(
             file_data, 
             results['detections'],
             confidence_threshold=0.5
         )
         
-        # Add base64 encoded overlay image to results
         results['overlay_image'] = base64.b64encode(overlay_image).decode('utf-8')
         
         return jsonify(results)
