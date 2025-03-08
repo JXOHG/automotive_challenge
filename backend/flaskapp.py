@@ -60,8 +60,9 @@ def allowed_file(filename):
 def crop_image_if_needed(image, detections, threshold=100):
     """
     Crop the image to focus on the parking area if too many detections are found.
+    Returns the cropped image and original detections (no re-analysis here).
     """
-    if len(detections) < threshold:
+    if len(detections) <= threshold:
         return image, detections
     
     # Find the highest y-coordinate among all detections
@@ -79,12 +80,8 @@ def crop_image_if_needed(image, detections, threshold=100):
     # Crop the image
     cropped_image = image[0:crop_height, 0:width]
     
-    # Re-encode and re-analyze the cropped image
-    _, buffer = cv2.imencode('.jpg', cropped_image)
-    cropped_data = buffer.tobytes()
-    
     logger.info(f"Image cropped to height {crop_height} due to high detection count ({len(detections)})")
-    return cropped_image, analyze_parking_image(cropped_data)['detections']
+    return cropped_image, detections  # Return original detections, no recursion
 
 def log_detection_to_file(image_name, detections):
     with open(os.path.join(RESULTS_FOLDER, DETECTION_LOG), 'a') as f:
@@ -199,6 +196,7 @@ def analyze_parking_image(file_data):
         if image is None:
             raise ValueError("Failed to decode image")
 
+        # Initial detection
         input_tensor = preprocess_image(image)
         with torch.no_grad():
             predictions = model(input_tensor)[0]
@@ -221,10 +219,12 @@ def analyze_parking_image(file_data):
                 'bbox': [int(x) for x in box]
             })
         
-        # Crop if more than 100 detections to focus on parking area
+        # Crop once if needed, then proceed with results
         if len(detections) > 100:
-            image, detections = crop_image_if_needed(image, detections)
-            
+            cropped_image, detections = crop_image_if_needed(image, detections)
+            # Update image for overlay, but use existing detections
+            image = cropped_image
+        
         total_spots = len(detections)
         filled_spots = sum(1 for d in detections if d['class_id'] == 2)  # 2 is "filled"
         empty_spots = sum(1 for d in detections if d['class_id'] == 1)  # 1 is "empty"
