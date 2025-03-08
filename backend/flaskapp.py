@@ -9,14 +9,14 @@ from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-import torch
-import torchvision
-from torchvision.models.detection import fasterrcnn_resnet50_fpn
-from torchvision.transforms import functional as F
 import logging
-from parking_spot_overlay import ParkingSpotOverlay
+import torch
 import base64
 from io import BytesIO
+
+# Import functions from newer.py
+from parking_spot_overlay import ParkingSpotOverlay  # Assuming this is still needed for overlay
+from newer import predict, crop, compile_data  # Import the functions from newer.py
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -36,53 +36,16 @@ DETECTION_LOG = 'detections.txt'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'mp4', 'avi', 'mov'}
 MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100MB
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, 'final_model.pth')
+MODEL_PATH = os.path.join(BASE_DIR, 'final_model.pth')  # Relative path for model
 
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(RESULTS_FOLDER, exist_ok=True)
 
-# Load the R-CNN model with increased detection limit
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = fasterrcnn_resnet50_fpn(pretrained=False, num_classes=3)
-in_features = model.roi_heads.box_predictor.cls_score.in_features
-model.roi_heads.box_predictor = torchvision.models.detection.faster_rcnn.FastRCNNPredictor(in_features, 3)
-model.roi_heads.detections_per_img = 500  # Ensure 500 detections per image
-model.load_state_dict(torch.load(MODEL_PATH, map_location=device, weights_only=True))
-model.eval()
-model.to(device)
-
 # Helper functions
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-def crop_image_if_needed(image, threshold=100, max_crops=1, initial_confidence_threshold=0.3):
-    """
-    Crop the image to focus on the parking area if too many detections are found.
-    Uses a lower confidence threshold for initial cropping to ensure all spots are included.
-    """
-    height, width = image.shape[:2]
-    highest_y = 0  # Initialize to 0; we want the largest y_max (bottommost detection)
-
-    # Find the highest y-coordinate (y_max) among all detections with a lower confidence threshold
-    detections = request.environ.get('current_detections', [])
-    if detections and len(detections) > threshold:
-        for detection in detections:
-            if detection['confidence'] >= initial_confidence_threshold:  # Lower threshold for cropping
-                bbox = detection['bbox']
-                if bbox[3] > highest_y:  # Use the largest y_max (bottommost detection)
-                    highest_y = bbox[3]
-    
-    # Add more padding to ensure all spots are included
-    padding = 50  # Increased padding
-    crop_height = min(highest_y + padding, height)
-    
-    if crop_height < height:  # Only crop if there's a meaningful reduction
-        cropped_image = image[0:crop_height, 0:width]
-        logger.info(f"Image cropped to height {crop_height} due to high detection count ({len(detections)})")
-        return cropped_image, True
-    return image, False
 
 def log_detection_to_file(image_name, detections):
     with open(os.path.join(RESULTS_FOLDER, DETECTION_LOG), 'a') as f:
@@ -90,10 +53,12 @@ def log_detection_to_file(image_name, detections):
             f.write(f"{image_name} {detection['class_id']} {detection['confidence']:.4f} "
                    f"{detection['bbox'][0]} {detection['bbox'][1]} {detection['bbox'][2]} {detection['bbox'][3]}\n")
 
-def preprocess_image(image):
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    tensor = F.to_tensor(image_rgb).unsqueeze(0).to(device)
-    return tensor
+def save_image_temp(file_data, temp_path):
+    """Save image data to a temporary file for processing"""
+    nparr = np.frombuffer(file_data, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    cv2.imwrite(temp_path, image)
+    return temp_path
 
 # Rate limiting
 limiter = Limiter(
@@ -171,17 +136,65 @@ def process_video(video_data):
     frame_interval = int(fps * 15)  # Process every 15 seconds
 
     try:
+        frame_count = 0
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
                 
-            if cap.get(cv2.CAP_PROP_POS_FRAMES) % 15 == 0:
+            if frame_count % frame_interval == 0:
+                # Save frame to temporary file for processing with newer.py
+                temp_path = os.path.join(UPLOAD_FOLDER, f'temp_frame_{frame_count}.jpg')
+                cv2.imwrite(temp_path, frame)
+                
+                # Use predict function from newer.py
+                all_predictions = predict(temp_path)
+                
+                # Crop if needed (as in newer.py)
+                if len(all_predictions) >= 100:
+                    cropped_path = crop(temp_path, all_predictions)
+                    cropped_predictions = predict(cropped_path)
+                    all_predictions.extend(cropped_predictions)
+                
+                # Convert predictions to the format expected by the API
+                detections = []
+                for pred in all_predictions:
+                    detections.append({
+                        'class_id': pred['label'],
+                        'confidence': pred['confidence'],
+                        'bbox': [int(x) for x in pred['box'].tolist()]
+                    })
+                
+                # Calculate occupancy
+                total_spots = len(detections)
+                filled_spots = sum(1 for d in detections if d['class_id'] == 2)  # 2 is "filled"
+                empty_spots = sum(1 for d in detections if d['class_id'] == 1)  # 1 is "empty"
+
+                spots_status = []
+                for i, detection in enumerate(detections):
+                    status = 'filled' if detection['class_id'] == 2 else 'empty'
+                    spots_status.append({'id': i + 1, 'status': status})
+
+                # Prepare frame result
                 _, buffer = cv2.imencode('.jpg', frame)
                 frame_data = buffer.tobytes()
-                frame_result = analyze_parking_image(frame_data)
-                frame_result['frame_data'] = frame_data
+                frame_result = {
+                    'total_spots': int(total_spots),
+                    'filled_spots': int(filled_spots),
+                    'empty_spots': int(empty_spots),
+                    'occupancy_rate': float((filled_spots / total_spots * 100) if total_spots > 0 else 0),
+                    'spots_status': spots_status,
+                    'detections': detections,
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'frame_data': frame_data
+                }
                 results.append(frame_result)
+                
+                # Clean up temporary file
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            
+            frame_count += 1
             
     finally:
         cap.release()
@@ -191,67 +204,30 @@ def process_video(video_data):
 def analyze_parking_image(file_data):
     try:
         start_time = time.time()
-        nparr = np.frombuffer(file_data, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
-        if image is None:
-            raise ValueError("Failed to decode image")
-
-        # Initial detection with a lower confidence threshold for cropping
-        input_tensor = preprocess_image(image)
-        with torch.no_grad():
-            predictions = model(input_tensor)[0]
-
-        boxes = predictions['boxes'].cpu().numpy()
-        labels = predictions['labels'].cpu().numpy()
-        scores = predictions['scores'].cpu().numpy()
-
-        initial_confidence_threshold = 0.3  # Lower threshold for cropping
-        valid_indices = scores >= initial_confidence_threshold
-        boxes = boxes[valid_indices]
-        labels = labels[valid_indices]
-        scores = scores[valid_indices]
-
+        # Save image data to a temporary file for processing with newer.py
+        temp_path = os.path.join(UPLOAD_FOLDER, 'temp_image.jpg')
+        save_image_temp(file_data, temp_path)
+        
+        # Use predict function from newer.py
+        all_predictions = predict(temp_path)
+        
+        # Crop if needed (as in newer.py)
+        if len(all_predictions) >= 100:
+            cropped_path = crop(temp_path, all_predictions)
+            cropped_predictions = predict(cropped_path)
+            all_predictions.extend(cropped_predictions)
+        
+        # Convert predictions to the format expected by the API
         detections = []
-        for i, (box, label, score) in enumerate(zip(boxes, labels, scores)):
+        for pred in all_predictions:
             detections.append({
-                'class_id': int(label),
-                'confidence': float(score),
-                'bbox': [int(x) for x in box]
+                'class_id': pred['label'],
+                'confidence': pred['confidence'],
+                'bbox': [int(x) for x in pred['box'].tolist()]
             })
         
-        # Store initial detections for cropping
-        request.environ['current_detections'] = detections
-        
-        # Crop if needed, then re-analyze once
-        crop_needed = False
-        if len(detections) > 100:
-            cropped_image, crop_needed = crop_image_if_needed(image)
-            if crop_needed:
-                image = cropped_image
-                input_tensor = preprocess_image(image)
-                with torch.no_grad():
-                    predictions = model(input_tensor)[0]
-
-                boxes = predictions['boxes'].cpu().numpy()
-                labels = predictions['labels'].cpu().numpy()
-                scores = predictions['scores'].cpu().numpy()
-                
-                # Use the stricter threshold for final detections
-                confidence_threshold = 0.5
-                valid_indices = scores >= confidence_threshold
-                boxes = boxes[valid_indices]
-                labels = labels[valid_indices]
-                scores = scores[valid_indices]
-
-                detections = []
-                for i, (box, label, score) in enumerate(zip(boxes, labels, scores)):
-                    detections.append({
-                        'class_id': int(label),
-                        'confidence': float(score),
-                        'bbox': [int(x) for x in box]
-                    })
-
+        # Calculate occupancy
         total_spots = len(detections)
         filled_spots = sum(1 for d in detections if d['class_id'] == 2)  # 2 is "filled"
         empty_spots = sum(1 for d in detections if d['class_id'] == 1)  # 1 is "empty"
@@ -261,7 +237,9 @@ def analyze_parking_image(file_data):
             status = 'filled' if detection['class_id'] == 2 else 'empty'
             spots_status.append({'id': i + 1, 'status': status})
 
+        # Log detections to both detections.txt and info.txt
         log_detection_to_file('current_image', detections)
+        compile_data(temp_path, all_predictions)  # Append to info.txt using newer.py function
 
         result = {
             'total_spots': int(total_spots),
@@ -272,7 +250,23 @@ def analyze_parking_image(file_data):
             'detections': detections,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
+        
+        # Generate overlay image
+        nparr = np.frombuffer(file_data, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        overlay_image = overlay_handler.create_overlay_image(
+            file_data,
+            detections,
+            confidence_threshold=0.5
+        )
+        result['overlay_image'] = base64.b64encode(overlay_image).decode('utf-8')
+        
         logger.info(f"Image processed in {time.time() - start_time:.2f} seconds with {total_spots} spots")
+        
+        # Clean up temporary file
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        
         return result
     except Exception as e:
         logger.error(f'Image analysis error: {str(e)}')
@@ -305,14 +299,6 @@ def analyze_parking():
     try:
         file_data = file.read()
         results = analyze_parking_image(file_data)
-        
-        overlay_image = overlay_handler.create_overlay_image(
-            file_data, 
-            results['detections'],
-            confidence_threshold=0.5
-        )
-        
-        results['overlay_image'] = base64.b64encode(overlay_image).decode('utf-8')
         
         return jsonify(results)
     except Exception as e:
