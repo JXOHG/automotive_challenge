@@ -1,15 +1,19 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 import os
 import numpy as np
 import cv2
 import time
 from datetime import datetime
 import json
+from werkzeug.utils import secure_filename
+from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 # Import your CNN model implementation
 # from model import ParkingSpotModel
 from flask_cors import CORS
-app = Flask(__name__)
+app = Flask(__name__, static_folder='public', static_url_path='')
 CORS(app, resources={r"/api/*": {"origins": "http://localhost:5173"}})  # Explicit origin
 
 
@@ -19,7 +23,11 @@ CORS(app, resources={r"/api/*": {"origins": "http://localhost:5173"}})  # Explic
 UPLOAD_FOLDER = 'uploads'
 RESULTS_FOLDER = 'results'
 DETECTION_LOG = 'detections.txt'  # Text file to log all detections
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'mp4', 'avi', 'mov'}
+MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100MB
+
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 # Create folders if they don't exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -51,11 +59,24 @@ from flask_limiter.util import get_remote_address
 limiter = Limiter(
     app=app,
     key_func=get_remote_address,
-    default_limits=["200 per minute"]  # Adjust as needed
+    default_limits=["500 per minute", "1000 per hour"]  # Increased limits
 )
 
 
-@limiter.limit("10 per second")  # Adjust based on your hardware
+limiter.limit("5 per second")  # More realistic for video processing # Adjust based on your hardware
+# Error handlers
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({'error': 'Resource not found'}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({'error': 'Internal server error'}), 500
+
+@app.errorhandler(429)
+def ratelimit_handler(e):
+    return jsonify({'error': f'Rate limit exceeded: {e.description}'}), 429
+
 
 @app.route('/api/simulation', methods=['GET'])
 def get_simulation_samples():
@@ -63,75 +84,126 @@ def get_simulation_samples():
         'count': 5,  # Match number of sample images
         'samples': [f'/samples/parking{i+1}.jpg' for i in range(5)]
     })
+# Add new video analysis endpoint
+@app.route('/api/analyze_video', methods=['POST'])
+@limiter.limit("2 per minute")
+def analyze_video():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No video file provided'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No video selected'}), 400
 
-def analyze_parking_image(image_path, filename):
-    """
-    Process the image with your CNN model to detect empty and filled parking spots
-    Replace this with your actual model implementation
-    """
-    # Load and preprocess the image
-    image = cv2.imread(image_path)
-    # Resize if needed
-    # image = cv2.resize(image, (required_width, required_height))
-    
-    # Here you would use your CNN model to analyze the image
-    # model = ParkingSpotModel()
-    # results = model.predict(image)
-    
-    # Mock results for demonstration
-    # In production, replace with actual model prediction
-    total_spots = 10
-    filled_spots = 7
-    empty_spots = 3
-    
-    # Generate mock detection results for each spot
-    # In a real implementation, these would come from your CNN model
-    spots_status = []
-    detections = []
-    
-    for i in range(1, total_spots + 1):
-        # Mock status for demonstration
-        status = 'filled' if i <= filled_spots else 'empty'
-        spots_status.append({'id': i, 'status': status})
+    if not allowed_file(file.filename):
+        return jsonify({'error': 'Invalid video format'}), 400
+
+    try:
+        # Save video
+        filename = secure_filename(file.filename)
+        video_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(video_path)
         
-        # Create mock bounding box coordinates and confidence
-        # In a real implementation, these would come from your model
-        if status == 'filled':
-            class_id = 1  # 1 for filled spot
-            confidence = 0.85 + (np.random.random() * 0.1)  # Random confidence between 0.85 and 0.95
-        else:
-            class_id = 0  # 0 for empty spot
-            confidence = 0.80 + (np.random.random() * 0.15)  # Random confidence between 0.80 and 0.95
-            
-        # Mock bounding box - in real implementation these would be actual coordinates
-        x_min = 100 + (i * 50)
-        y_min = 150
-        x_max = x_min + 45
-        y_max = y_min + 90
+        # Process video
+        results = process_video(video_path)
         
-        # Add to detections list for text file logging
-        detections.append({
-            'class_id': class_id,
-            'confidence': confidence,
-            'bbox': [x_min, y_min, x_max, y_max]
+        return jsonify({
+            'total_frames': len(results),
+            'results': results,
+            'average_occupancy': sum(r['occupancy_rate'] for r in results)/len(results)
         })
-    
-    # Log detections to text file
-    log_detection_to_file(filename, detections)
-    
-    results = {
-        'total_spots': total_spots,
-        'filled_spots': filled_spots,
-        'empty_spots': empty_spots,
-        'occupancy_rate': (filled_spots / total_spots) * 100,
-        'spots_status': spots_status,
-        'detections': detections,  # Include raw detection data in the JSON response
-        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    }
-    
+        
+    except Exception as e:
+        app.logger.error(f'Video processing error: {str(e)}')
+        return jsonify({'error': 'Failed to process video'}), 500
+    finally:
+        if os.path.exists(video_path):
+            os.remove(video_path)
+def process_video(video_path):
+    results = []
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_interval = int(fps * 15)  # 15 seconds interval
+    frame_count = 0
+
+    try:
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            if frame_count % frame_interval == 0:
+                frame_filename = f"video_frame_{frame_count}.jpg"
+                frame_path = os.path.join(app.config['UPLOAD_FOLDER'], frame_filename)
+                cv2.imwrite(frame_path, frame)
+                
+                frame_result = analyze_parking_image(frame_path, frame_filename)
+                results.append(frame_result)
+                
+                # Cleanup frame file
+                if os.path.exists(frame_path):
+                    os.remove(frame_path)
+            
+            frame_count += 1
+            
+    finally:
+        cap.release()
+        
     return results
 
+
+def analyze_parking_image(image_path, filename):
+    try:
+        image = cv2.imread(image_path)
+        if image is None:
+            raise ValueError("Failed to read image file")
+            
+        # Mock CNN model implementation
+        total_spots = 10
+        filled_spots = np.random.randint(3, 8)
+        empty_spots = total_spots - filled_spots
+        
+        spots_status = []
+        detections = []
+        
+        for i in range(1, total_spots + 1):
+            status = 'filled' if i <= filled_spots else 'empty'
+            spots_status.append({'id': i, 'status': status})
+            
+            class_id = 1 if status == 'filled' else 0
+            confidence = np.random.uniform(0.8, 0.95)
+            
+            x_min = 100 + (i * 50)
+            y_min = 150
+            x_max = x_min + 45
+            y_max = y_min + 90
+            
+            detections.append({
+                'class_id': class_id,
+                'confidence': confidence,
+                'bbox': [x_min, y_min, x_max, y_max]
+            })
+        
+        log_detection_to_file(filename, detections)
+        
+        return {
+            'total_spots': total_spots,
+            'filled_spots': filled_spots,
+            'empty_spots': empty_spots,
+            'occupancy_rate': (filled_spots / total_spots) * 100,
+            'spots_status': spots_status,
+            'detections': detections,
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+    except Exception as e:
+        app.logger.error(f'Image analysis error: {str(e)}')
+        raise
+    
 # API Routes
+@app.route('/videos/<path:filename>')
+def serve_video(filename):
+    return send_from_directory(os.path.join(app.static_folder, 'videos'), filename)
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """API health check endpoint"""
@@ -141,47 +213,36 @@ def health_check():
     })
 
 @app.route('/api/analyze', methods=['POST'])
+@limiter.limit("5 per second")  # More realistic for video processing
 def analyze_parking():
-    """
-    Analyze a parking lot image to identify empty and filled spots
-    
-    Expects:
-    - A 'file' part containing the image
-    - Optional 'location_id' parameter to identify the parking lot
-    
-    Returns:
-    - JSON with parking spot analysis results
-    """
-    # Check if the post request has the file part
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
     
     file = request.files['file']
     if file.filename == '':
         return jsonify({'error': 'No file selected'}), 400
-    
-    if file and allowed_file(file.filename):
-        # Create a unique filename
-        timestamp = int(time.time())
-        location_id = request.form.get('location_id', 'unknown')
-        filename = f"{location_id}_{timestamp}_{file.filename}"
-        file_path = os.path.join(UPLOAD_FOLDER, filename)
-        
-        # Save the file
+
+    if not allowed_file(file.filename):
+        return jsonify({'error': 'Invalid file type'}), 400
+
+    try:
+        filename = secure_filename(file.filename)
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(file_path)
         
-        # Process the image
         results = analyze_parking_image(file_path, filename)
         
-        # Save results for historical tracking
-        result_filename = f"{location_id}_{timestamp}_results.json"
+        # Save results
+        result_filename = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_results.json"
         result_path = os.path.join(RESULTS_FOLDER, result_filename)
         with open(result_path, 'w') as f:
             json.dump(results, f)
-        
+            
         return jsonify(results)
     
-    return jsonify({'error': 'Invalid file type'}), 400
+    except Exception as e:
+        app.logger.error(f'Error processing image: {str(e)}')
+        return jsonify({'error': 'Failed to process image'}), 500
 
 @app.route('/api/statistics', methods=['GET'])
 def get_statistics():

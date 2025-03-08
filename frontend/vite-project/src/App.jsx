@@ -1,15 +1,48 @@
-import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom'
 import { ParkingAnalyzer } from './components/parking-analyzer'
+import { createContext, useContext, useState, useEffect } from 'react'
 import './App.css'
+
+// Create a context for app state management
+const AppContext = createContext();
+
+export function AppProvider({ children }) {
+  const [shouldReset, setShouldReset] = useState(false);
+
+  const resetApp = () => {
+    setShouldReset(true);
+    // Reset the flag after a short delay
+    setTimeout(() => setShouldReset(false), 100);
+  };
+
+  return (
+    <AppContext.Provider value={{ shouldReset, resetApp }}>
+      {children}
+    </AppContext.Provider>
+  );
+}
+
+export const useAppContext = () => useContext(AppContext);
 
 // Navbar component
 function Navbar() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const { resetApp } = useAppContext();
+  
+  const handleLogoClick = () => {
+    resetApp(); // Reset app state
+    navigate('/'); // Navigate to home
+  };
   
   return (
     <nav className="navbar">
       <div className="nav-container">
-        <div className="nav-brand">
+        <div 
+          className="nav-brand" 
+          onClick={handleLogoClick}
+          style={{ cursor: 'pointer' }}
+        >
           <span className="brand-text">Parking Analyzer</span>
         </div>
         <div className="nav-links">
@@ -51,6 +84,7 @@ function HomePage() {
 
 // About page component
 function AboutPage() {
+  // Existing about page code
   return (
     <main className="main-content">
       <div className="content-container">
@@ -87,13 +121,15 @@ function AboutPage() {
 function App() {
   return (
     <BrowserRouter>
-      <div className="app-wrapper">
-        <Navbar />
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/about" element={<AboutPage />} />
-        </Routes>
-      </div>
+      <AppProvider>
+        <div className="app-wrapper">
+          <Navbar />
+          <Routes>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/about" element={<AboutPage />} />
+          </Routes>
+        </div>
+      </AppProvider>
     </BrowserRouter>
   );
 }
