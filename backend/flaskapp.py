@@ -20,7 +20,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder='public', static_url_path='')
-CORS(app, resources={r"/api/*": {"origins": "http://172.30.179.110:5173"}})  # Updated to allow simulator’s frontend
+# Allow both localhost and the specific IP for the frontend
+CORS(app, resources={
+    r"/api/*": {
+        "origins": ["http://localhost:5173", "http://172.30.179.110:5173"]
+    }
+})
 
 # Configuration
 UPLOAD_FOLDER = 'uploads'
