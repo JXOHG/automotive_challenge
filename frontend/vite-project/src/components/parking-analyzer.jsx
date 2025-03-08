@@ -144,7 +144,7 @@ export function ParkingAnalyzer() {
 
       setTimeout(() => {
         animationFrameRef.current = requestAnimationFrame(processFrame);
-      }, 1000);
+      }, 2000);
     });
 
     video.play().catch(error => {

@@ -26,7 +26,7 @@ DETECTION_LOG = 'detections.txt'  # Text file to log all detections
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'mp4', 'avi', 'mov'}
 MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100MB
 
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 # Create folders if they don't exist
@@ -63,7 +63,7 @@ limiter = Limiter(
 )
 
 
-limiter.limit("5 per second")  # More realistic for video processing # Adjust based on your hardware
+@limiter.limit("10 per second")  # More realistic for video processing # Adjust based on your hardware
 # Error handlers
 @app.errorhandler(404)
 def not_found(error):
@@ -99,13 +99,10 @@ def analyze_video():
         return jsonify({'error': 'Invalid video format'}), 400
 
     try:
-        # Save video
-        filename = secure_filename(file.filename)
-        video_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(video_path)
-        
-        # Process video
-        results = process_video(video_path)
+       # Process video from memory
+        file_data = file.read()
+        nparr = np.frombuffer(file_data, np.uint8)
+        results = process_video(nparr)
         
         return jsonify({
             'total_frames': len(results),
@@ -131,20 +128,14 @@ def process_video(video_path):
             ret, frame = cap.read()
             if not ret:
                 break
-            
-            if frame_count % frame_interval == 0:
-                frame_filename = f"video_frame_{frame_count}.jpg"
-                frame_path = os.path.join(app.config['UPLOAD_FOLDER'], frame_filename)
-                cv2.imwrite(frame_path, frame)
                 
-                frame_result = analyze_parking_image(frame_path, frame_filename)
+            # Process every 15th frame
+            if cap.get(cv2.CAP_PROP_POS_FRAMES) % 15 == 0:
+                # Process frame directly
+                _, buffer = cv2.imencode('.jpg', frame)
+                frame_data = buffer.tobytes()
+                frame_result = analyze_parking_image(frame_data)
                 results.append(frame_result)
-                
-                # Cleanup frame file
-                if os.path.exists(frame_path):
-                    os.remove(frame_path)
-            
-            frame_count += 1
             
     finally:
         cap.release()
@@ -152,13 +143,16 @@ def process_video(video_path):
     return results
 
 
-def analyze_parking_image(image_path, filename):
+def analyze_parking_image(file_data):
     try:
-        image = cv2.imread(image_path)
+        # Read image directly from memory
+        nparr = np.frombuffer(file_data, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
         if image is None:
-            raise ValueError("Failed to read image file")
-            
-        # Mock CNN model implementation
+            raise ValueError("Failed to decode image")
+
+        # Mock CNN model implementation (unchanged)
         total_spots = 10
         filled_spots = np.random.randint(3, 8)
         empty_spots = total_spots - filled_spots
@@ -183,8 +177,6 @@ def analyze_parking_image(image_path, filename):
                 'confidence': confidence,
                 'bbox': [x_min, y_min, x_max, y_max]
             })
-        
-        log_detection_to_file(filename, detections)
         
         return {
             'total_spots': total_spots,
@@ -226,18 +218,9 @@ def analyze_parking():
         return jsonify({'error': 'Invalid file type'}), 400
 
     try:
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(file_path)
-        
-        results = analyze_parking_image(file_path, filename)
-        
-        # Save results
-        result_filename = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_results.json"
-        result_path = os.path.join(RESULTS_FOLDER, result_filename)
-        with open(result_path, 'w') as f:
-            json.dump(results, f)
-            
+        # Process file directly from memory
+        file_data = file.read()
+        results = analyze_parking_image(file_data)
         return jsonify(results)
     
     except Exception as e:
