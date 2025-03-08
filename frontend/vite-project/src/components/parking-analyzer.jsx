@@ -8,9 +8,8 @@ import {
   CameraOff 
 } from "lucide-react";
 
-const API_BASE_URL = "http://192.168.137.135:5000/api"; // Update with Pi's IP
-
-const CAMERA_FEED_URL = "http://172.30.179.110:5001/video_feed"; // Camera simulator with correct endpoint
+const API_BASE_URL = "http://192.168.137.135:5000/api"; // Raspberry Pi API
+const CAMERA_FEED_URL = "http://172.30.179.110:5001/video_feed"; // Camera simulator
 
 function cn(...classes) {
   return classes.filter(Boolean).join(" ");
@@ -22,26 +21,38 @@ export function ParkingAnalyzer() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
-  const [apiHealthy, setApiHealthy] = useState(null);
+  const [apiHealthy, setApiHealthy] = useState(null); // null = checking, true = healthy, false = unhealthy
   const [liveMode, setLiveMode] = useState(false);
   const [liveResults, setLiveResults] = useState(null);
-  const [streamSrc, setStreamSrc] = useState(null); // For MJPEG stream source
+  const [streamSrc, setStreamSrc] = useState(null);
 
-  const videoRef = useRef(null); // Ref for the img element
-  const abortControllerRef = useRef(new AbortController()); // For image upload cancellation
-  const streamAbortControllerRef = useRef(null); // For stream cancellation
-  const streamReaderRef = useRef(null); // To store the stream reader for cancellation
-  const fileInputRef = useRef(null); // Ref for the file input
+  const videoRef = useRef(null);
+  const abortControllerRef = useRef(new AbortController());
+  const streamAbortControllerRef = useRef(null);
+  const streamReaderRef = useRef(null);
+  const fileInputRef = useRef(null);
 
-  // Health check for main API
+  // Health check with retry logic
   useEffect(() => {
-    const checkHealth = async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/health`);
-        setApiHealthy(response.ok);
-      } catch (error) {
-        setApiHealthy(false);
+    const checkHealth = async (retries = 3, delay = 2000) => {
+      for (let i = 0; i < retries; i++) {
+        try {
+          const response = await fetch(`${API_BASE_URL}/health`, { timeout: 5000 });
+          console.log(`Health check attempt ${i + 1}: Status ${response.status}`);
+          if (response.ok) {
+            setApiHealthy(true);
+            return;
+          } else {
+            console.warn(`Health check failed with status: ${response.status}`);
+          }
+        } catch (error) {
+          console.error(`Health check attempt ${i + 1} failed: ${error.message}`);
+        }
+        if (i < retries - 1) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
       }
+      setApiHealthy(false); // Set to false only after all retries fail
     };
     checkHealth();
   }, []);
@@ -57,30 +68,28 @@ export function ParkingAnalyzer() {
   }, [liveMode]);
 
   const startVideoFeed = () => {
-    setStreamSrc(CAMERA_FEED_URL); // Set the MJPEG stream URL
+    setStreamSrc(CAMERA_FEED_URL);
 
-    // Initialize a new AbortController for the stream
     streamAbortControllerRef.current = new AbortController();
 
-    // Parse the multipart response for JSON data
     fetch(CAMERA_FEED_URL, { 
       method: "GET",
-      signal: streamAbortControllerRef.current.signal // Attach abort signal
+      signal: streamAbortControllerRef.current.signal
     })
       .then(response => {
         const reader = response.body.getReader();
-        streamReaderRef.current = reader; // Store reader for cancellation
+        streamReaderRef.current = reader;
         let chunks = "";
 
         const processStream = ({ done, value }) => {
           if (done || !liveMode) {
-            reader.cancel(); // Cancel reader if done or liveMode is false
+            reader.cancel();
             return;
           }
 
           chunks += new TextDecoder().decode(value);
           const parts = chunks.split("--frame");
-          chunks = parts.pop(); // Keep incomplete part
+          chunks = parts.pop();
 
           parts.forEach(part => {
             const dataMatch = part.match(/data: ({.*?})\r\n\r\n/s);
@@ -99,7 +108,7 @@ export function ParkingAnalyzer() {
           });
 
           if (liveMode) {
-            reader.read().then(processStream); // Only continue if liveMode is true
+            reader.read().then(processStream);
           }
         };
 
@@ -117,15 +126,14 @@ export function ParkingAnalyzer() {
     setStreamSrc(null);
     setLiveResults(null);
 
-    // Abort the fetch request and cancel the stream reader
     if (streamAbortControllerRef.current) {
       streamAbortControllerRef.current.abort();
     }
     if (streamReaderRef.current) {
-      streamReaderRef.current.cancel(); // Cancel the reader explicitly
+      streamReaderRef.current.cancel();
       streamReaderRef.current = null;
     }
-    streamAbortControllerRef.current = null; // Reset controller
+    streamAbortControllerRef.current = null;
   };
 
   // Image analysis functions
@@ -187,12 +195,18 @@ export function ParkingAnalyzer() {
   };
 
   const handleSelectImageClick = () => {
-    fileInputRef.current?.click(); // Trigger the hidden file input
+    fileInputRef.current?.click();
   };
 
   return (
     <div className="upload-container">
       {/* API Health Warning */}
+      {apiHealthy === null && (
+        <div className="api-warning">
+          <RefreshCw className="animate-spin warning-icon" />
+          <span>Checking backend API status...</span>
+        </div>
+      )}
       {apiHealthy === false && (
         <div className="api-warning">
           <AlertCircle className="warning-icon" />
@@ -269,7 +283,7 @@ export function ParkingAnalyzer() {
             <div className="upload-card">
               <label className="upload-label">
                 <input
-                  ref={fileInputRef} // Add ref to the file input
+                  ref={fileInputRef}
                   type="file"
                   accept="image/*"
                   onChange={handleImageUpload}
@@ -282,7 +296,7 @@ export function ParkingAnalyzer() {
                     Upload an image or start the live feed
                   </span>
                   <button
-                    onClick={handleSelectImageClick} // Trigger file input click
+                    onClick={handleSelectImageClick}
                     className="upload-button"
                   >
                     <Upload className="button-icon" />
@@ -302,7 +316,7 @@ export function ParkingAnalyzer() {
                   </button>
                   <button
                     onClick={handleAnalyze}
-                    disabled={isAnalyzing}
+                    disabled={isAnalyzing || apiHealthy === false}
                     className="primary-button"
                   >
                     {isAnalyzing ? (
