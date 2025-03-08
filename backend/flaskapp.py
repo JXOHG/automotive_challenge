@@ -113,9 +113,7 @@ def analyze_video():
     except Exception as e:
         app.logger.error(f'Video processing error: {str(e)}')
         return jsonify({'error': 'Failed to process video'}), 500
-    finally:
-        if os.path.exists(video_path):
-            os.remove(video_path)
+   
 def process_video(video_path):
     results = []
     cap = cv2.VideoCapture(video_path)
