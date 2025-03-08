@@ -62,8 +62,10 @@ def crop(image_path, predictions):
     crop = image.crop((0, 0, 640, highest + 10))
     crop.save(cropped_path)
     return cropped_path
-
+from datetime import datetime
 def compile_data(image_path, predictions):
+    image_name = os.path.splitext(os.path.basename(image_path))[0]
+    timestamp = datetime.now().strftime('%Y-%m-%d_%H:%M:%S')
     """Append predictions to info.txt in the same directory as this script"""
     base_name = os.path.splitext(os.path.basename(image_path))[0]
     # Get the directory of this script
@@ -71,10 +73,10 @@ def compile_data(image_path, predictions):
     # Create full path for info.txt in script directory
     info_path = os.path.join(script_dir, "info.txt")
     
-    with open(info_path, "a") as f:  # Append mode
-        for prediction in predictions:
-            x_min, y_min, x_max, y_max = map(int, prediction["box"].tolist())
-            f.write(f'{base_name} {prediction["confidence"]} {prediction["label"]} {x_min} {y_min} {x_max} {y_max}\n')
+    with open('info.txt', 'a') as f:
+        for pred in predictions:
+            f.write(f"{image_name} {timestamp} {pred['confidence']:.4f} {pred['label']} "
+                    f"{int(pred['box'][0])} {int(pred['box'][1])} {int(pred['box'][2])} {int(pred['box'][3])}\n")
 
 def display_image(image_path, predictions):
     """Display image with bounding boxes and labels"""
