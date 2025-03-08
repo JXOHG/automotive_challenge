@@ -9,7 +9,8 @@ import json
 import threading
 import logging
 import os
-
+# Add to imports in camera_simulator.py
+import base64
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ RASPBERRY_PI_API = "http://192.168.137.135:5000/api"
 
 # Global flag to control the generator
 stop_event = threading.Event()
+
 
 def generate_frames():
     if not os.path.exists(SIMULATION_VIDEO):
@@ -66,6 +68,13 @@ def generate_frames():
                     results = response.json()
                     logger.info(f"Frame analyzed in {time.time() - start_time:.2f} seconds")
                     last_process = current_time if last_process is not None else current_time
+                    
+                    # Check if overlay image is in the response
+                    if 'overlay_image' in results:
+                        # Decode the overlay image for display
+                        overlay_bytes = base64.b64decode(results['overlay_image'])
+                        frame_bytes = overlay_bytes  # Use the overlay image
+                        
                 except requests.exceptions.RequestException as e:
                     logger.error(f"Failed to analyze frame: {str(e)}")
                     results = {'error': str(e)}

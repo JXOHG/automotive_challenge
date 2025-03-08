@@ -14,7 +14,9 @@ import torchvision
 from torchvision.models.detection import fasterrcnn_resnet50_fpn
 from torchvision.transforms import functional as F
 import logging
-
+# Import the overlay module
+from parking_spot_overlay import ParkingSpotOverlay
+import base64
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -69,6 +71,10 @@ limiter = Limiter(
     key_func=get_remote_address,
     default_limits=["500 per minute", "1000 per hour"]
 )
+# Initialize the overlay handler
+overlay_handler = ParkingSpotOverlay()
+
+
 
 # Error handlers
 @app.errorhandler(404)
@@ -110,6 +116,17 @@ def analyze_video():
         file_data = file.read()
         nparr = np.frombuffer(file_data, np.uint8)
         results = process_video(nparr)
+        
+        # Add overlay to each frame result
+        for i, frame_result in enumerate(results):
+            if 'frame_data' in frame_result and 'detections' in frame_result:
+                overlay_image = overlay_handler.create_overlay_image(
+                    frame_result['frame_data'],
+                    frame_result['detections'],
+                    confidence_threshold=0.5
+                )
+                frame_result['overlay_image'] = base64.b64encode(overlay_image).decode('utf-8')
+                
         return jsonify({
             'total_frames': len(results),
             'results': results,
@@ -135,6 +152,7 @@ def process_video(video_data):
                 _, buffer = cv2.imencode('.jpg', frame)
                 frame_data = buffer.tobytes()
                 frame_result = analyze_parking_image(frame_data)
+                frame_result['frame_data'] = frame_data  # Store frame data for overlay
                 results.append(frame_result)
             
     finally:
@@ -223,7 +241,19 @@ def analyze_parking():
 
     try:
         file_data = file.read()
+        # Store file data for overlay creation
         results = analyze_parking_image(file_data)
+        
+        # Create overlay image
+        overlay_image = overlay_handler.create_overlay_image(
+            file_data, 
+            results['detections'],
+            confidence_threshold=0.5
+        )
+        
+        # Add base64 encoded overlay image to results
+        results['overlay_image'] = base64.b64encode(overlay_image).decode('utf-8')
+        
         return jsonify(results)
     except Exception as e:
         logger.error(f'Error processing image: {str(e)}')

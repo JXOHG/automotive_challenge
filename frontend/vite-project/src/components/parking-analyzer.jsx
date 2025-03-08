@@ -5,9 +5,10 @@ import {
   RefreshCw, 
   AlertCircle, 
   Video, 
-  CameraOff 
+  CameraOff,
+  Eye,
+  EyeOff
 } from "lucide-react";
-
 const API_BASE_URL = "http://192.168.137.135:5000/api";
 const CAMERA_FEED_URL = "http://172.30.179.110:5001/video_feed";
 
@@ -16,6 +17,8 @@ function cn(...classes) {
 }
 
 export function ParkingAnalyzer() {
+  // Add this state to the component:
+const [showOverlay, setShowOverlay] = useState(true);
   const [image, setImage] = useState(null);
   const [file, setFile] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -169,7 +172,7 @@ export function ParkingAnalyzer() {
   const handleAnalyze = async () => {
     setIsAnalyzing(true);
     setError(null);
-
+  
     try {
       const data = await analyzeImage(file);
       setResults({
@@ -177,6 +180,8 @@ export function ParkingAnalyzer() {
         availableSpots: data.empty_spots,
         occupiedSpots: data.filled_spots,
         spotMap: data.spots_status?.map(spot => spot.status === "filled") || [],
+        // Store the overlay image
+        overlayImage: data.overlay_image ? `data:image/jpeg;base64,${data.overlay_image}` : null
       });
     } catch (error) {
       setError(error.message || "Analysis failed");
@@ -225,6 +230,41 @@ export function ParkingAnalyzer() {
       {liveMode ? (
         <div className="live-feed-container">
           <div className="live-feed-card">
+          {liveResults && liveResults.overlay_image ? (
+    <img
+      ref={videoRef}
+      src={showOverlay ? `data:image/jpeg;base64,${liveResults.overlay_image}` : streamSrc}
+      alt="Live Feed"
+      className="live-video"
+      onLoad={() => console.log("Stream image loaded")}
+      onError={(e) => {
+        console.error("Image load failed:", e);
+        setLiveMode(false);
+      }}
+    />
+  ) : (
+    <img
+      ref={videoRef}
+      src={streamSrc}
+      alt="Live Feed"
+      className="live-video"
+      onLoad={() => console.log("Stream image loaded")}
+      onError={(e) => {
+        console.error("Image load failed:", e);
+        setLiveMode(false);
+      }}
+    />
+  )}
+  
+  {/* Add toggle overlay button */}
+  {liveResults && liveResults.overlay_image && (
+    <button 
+      onClick={() => setShowOverlay(!showOverlay)}
+      className="overlay-toggle-button"
+    >
+      {showOverlay ? "Hide Overlay" : "Show Overlay"}
+    </button>
+  )}
             <img
               ref={videoRef}
               src={streamSrc}
@@ -307,27 +347,49 @@ export function ParkingAnalyzer() {
           ) : (
             <div className="analysis-section">
               <div className="image-preview-card">
-                <img src={image} alt="Uploaded preview" className="preview-image" />
-                <div className="preview-actions">
-                  <button onClick={resetAnalysis} className="secondary-button">
-                    Upload New Image
-                  </button>
-                  <button
-                    onClick={handleAnalyze}
-                    disabled={isAnalyzing || apiHealthy === false}
-                    className="primary-button"
-                  >
-                    {isAnalyzing ? (
-                      <>
-                        <RefreshCw className="animate-spin" />
-                        Analyzing...
-                      </>
-                    ) : (
-                      "Analyze Image"
-                    )}
-                  </button>
-                </div>
-              </div>
+  <img 
+    src={showOverlay && results?.overlayImage ? results.overlayImage : image} 
+    alt="Uploaded preview" 
+    className="preview-image" 
+  />
+  <div className="preview-actions">
+    <button onClick={resetAnalysis} className="secondary-button">
+      Upload New Image
+    </button>
+    {results && results.overlayImage && (
+      <button 
+        onClick={() => setShowOverlay(!showOverlay)} 
+        className="toggle-button"
+      >
+        {showOverlay ? (
+          <>
+            <EyeOff size={16} />
+            Hide Overlay
+          </>
+        ) : (
+          <>
+            <Eye size={16} />
+            Show Overlay
+          </>
+        )}
+      </button>
+    )}
+    <button
+      onClick={handleAnalyze}
+      disabled={isAnalyzing || apiHealthy === false}
+      className="primary-button"
+    >
+      {isAnalyzing ? (
+        <>
+          <RefreshCw className="animate-spin" />
+          Analyzing...
+        </>
+      ) : (
+        "Analyze Image"
+      )}
+    </button>
+  </div>
+</div>
 
               {(results || error) && (
                 <div className="analysis-results">
