@@ -63,15 +63,14 @@ def crop_image_if_needed(image, threshold=100, max_crops=1):
     Returns the cropped image and requires re-analysis.
     """
     height, width = image.shape[:2]
-    highest_y = height  # Default to full height if no detections
+    highest_y = 0  # Initialize to 0; we want the largest y_max (bottommost detection)
 
-    # Find the highest y-coordinate among all detections (if available)
-    # Note: This function is called after initial detection, so detections should be passed
+    # Find the highest y-coordinate (y_max) among all detections
     detections = request.environ.get('current_detections', [])
     if detections and len(detections) > threshold:
         for detection in detections:
             bbox = detection['bbox']
-            if bbox[3] < highest_y:  # Lower y_max means higher on the image
+            if bbox[3] > highest_y:  # Use the largest y_max (bottommost detection)
                 highest_y = bbox[3]
     
     # Add padding to the crop
