@@ -8,25 +8,27 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 
+# Model setup
 num_classes = 3
 model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=False)
-
 in_features = model.roi_heads.box_predictor.cls_score.in_features
 model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 model.roi_heads.detections_per_img = 500
 
-model.load_state_dict(torch.load("C:\\Users\\rayta\\Documents\\AIC\\final_model.pth", map_location=torch.device('cpu'))) # The model, change path
-model.eval() 
+# Load model weights (update path as needed)
+model.load_state_dict(torch.load("C:/Users/justi/Downloads/final_model.pth", map_location=torch.device('cpu')))
+model.eval()
 
+# Image transform
 transform = transforms.Compose([
     transforms.ToTensor(),
 ])
 
-predictions = []
-
 def predict(image_path):
+    """Make predictions on the input image"""
+    predictions = []
     image = Image.open(image_path).convert('RGB')
-    image_tensor = transform(image).unsqueeze(0) 
+    image_tensor = transform(image).unsqueeze(0)
 
     with torch.no_grad():
         prediction = model(image_tensor)
@@ -35,12 +37,17 @@ def predict(image_path):
     labels = prediction[0]['labels']
     scores = prediction[0]['scores']
 
-    image = cv2.imread(image_path)
     for i, box in enumerate(boxes):
-        # print(f'Predicted box: {box}, Label: {labels[i]}, Confidence: {scores[i]}')
-        predictions.append({"box": box, "label": int(labels[i]), "confidence": scores[i]})
+        predictions.append({
+            "box": box,
+            "label": int(labels[i]),
+            "confidence": float(scores[i])
+        })
+    
+    return predictions
 
-def crop(image_path):
+def crop(image_path, predictions):
+    """Crop image if predictions exceed 100, based on highest box"""
     highest = 640
     for prediction in predictions:
         x_min, y_min, x_max, y_max = map(int, prediction["box"].tolist())
@@ -48,41 +55,67 @@ def crop(image_path):
             highest = y_max
 
     image = Image.open(image_path)
-
     base_name = os.path.splitext(os.path.basename(image_path))[0]
-    # Need to make directory and stuff
-    path = os.path.join("C:\\Users\\rayta\\Documents\\AIC\\parking_dataset\\Cropped_Images", f"{base_name}_c.jpg")
+    output_dir = os.path.dirname(image_path)
+    cropped_path = os.path.join(output_dir, f"{base_name}_c.jpg")
 
     crop = image.crop((0, 0, 640, highest + 10))
-    crop.save(path)
-    return path
+    crop.save(cropped_path)
+    return cropped_path
 
-def display_image(image_path):
+def compile_data(image_path, predictions):
+    """Save predictions to info.txt"""
+    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    with open("info.txt", "w") as f:
+        for prediction in predictions:
+            x_min, y_min, x_max, y_max = map(int, prediction["box"].tolist())
+            f.write(f'{base_name} {prediction["confidence"]} {prediction["label"]} {x_min} {y_min} {x_max} {y_max}\n')
+
+def display_image(image_path, predictions):
+    """Display image with bounding boxes and labels"""
     image = cv2.imread(image_path)
+    
     for prediction in predictions:
         x_min, y_min, x_max, y_max = map(int, prediction["box"].tolist())
         label = str(prediction["label"])
-        cv2.rectangle(image, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
-        cv2.putText(image, label, (x_min, y_min - 5), cv2.FONT_HERSHEY_SIMPLEX, 
-                0.5, (0, 255, 0), 1, cv2.LINE_AA)
+        confidence = prediction["confidence"]
+        
+        # Green for label 1, Red for others
+        color = (0, 255, 0) if label == "1" else (0, 0, 255)
+        
+        # Draw rectangle and label
+        cv2.rectangle(image, (x_min, y_min), (x_max, y_max), color, 2)
+        display_text = f"{label} ({confidence:.2f})"
+        cv2.putText(image, display_text, (x_min, y_min - 5), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
     
+    # Convert BGR to RGB for matplotlib
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     plt.figure(figsize=(10, 10))
-    plt.imshow(image)
+    plt.imshow(image_rgb)
     plt.axis("off")
     plt.show()
 
-def compile_data(image_path):
-    base_name = os.path.splitext(os.path.basename(image_path))[0]
-    f = open("info.txt", "w")
-    for prediction in predictions:
-        x_min, y_min, x_max, y_max = map(int, prediction["box"].tolist())
-        f.write(f'{base_name} {prediction["confidence"]} {prediction["label"]} {x_min} {y_min} {x_max} {y_max}\n') 
-    f.close()   
+def main():
+    # Specify your image path here
+    image_path = "C:/Users/justi/Downloads/parking_dataset/train_images/2012-10-31_14_03_19.jpg"
     
-image_path = "C:\\Users\\rayta\\Documents\\AIC\\parking_test_data\\test_data\\test_images\\2012-09-11_15_36_32.jpg" # Change to whatever we need to analyze
-predict(image_path)
-if len(predictions) >= 100:
-    cropped_path = crop(image_path)
-    predict(cropped_path)
-compile_data(image_path)
-# display_image(image_path)
+    # Make initial predictions on full image
+    all_predictions = predict(image_path)
+    
+    # Check if predictions exceed 100 and crop if necessary
+    if len(all_predictions) >= 100:
+        cropped_path = crop(image_path, all_predictions)
+        # Get predictions from cropped image
+        cropped_predictions = predict(cropped_path)
+        # Combine all predictions
+        all_predictions.extend(cropped_predictions)
+    
+    # Save all predictions to text file
+    compile_data(image_path, all_predictions)
+    
+    # Display original image with all predictions
+    display_image(image_path, all_predictions)
+
+if __name__ == "__main__":
+    main()
