@@ -73,7 +73,7 @@ def compile_data(image_path, predictions):
     f = open(output_file, "a")
     for prediction in predictions:
         x_min, y_min, x_max, y_max = map(int, prediction["box"].tolist())
-        f.write(f'{base_name} {prediction["confidence"]} {prediction["label"]} {x_min} {y_min} {x_max} {y_max}\n') 
+        f.write(f'{base_name}.jpg {prediction["label"]} {prediction["confidence"]} {x_min} {y_min} {x_max} {y_max}\n') 
     f.close()
 
 def display_image(image_path, predictions):
