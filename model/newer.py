@@ -64,9 +64,9 @@ def crop(image_path, predictions):
     return cropped_path
 
 def compile_data(image_path, predictions):
-    """Save predictions to info.txt"""
+    """Append predictions to info.txt"""
     base_name = os.path.splitext(os.path.basename(image_path))[0]
-    with open("info.txt", "w") as f:
+    with open("info.txt", "a") as f:  # Changed from "w" to "a" for append mode
         for prediction in predictions:
             x_min, y_min, x_max, y_max = map(int, prediction["box"].tolist())
             f.write(f'{base_name} {prediction["confidence"]} {prediction["label"]} {x_min} {y_min} {x_max} {y_max}\n')
@@ -81,7 +81,7 @@ def display_image(image_path, predictions):
         confidence = prediction["confidence"]
         
         # Green for label 1, Red for others
-        color = (0, 255, 0) if label == "1" else (0, 0, 255)
+        color = (0, 255, 0) if label == "1" else (255, 0, 0)
         
         # Draw rectangle and label
         cv2.rectangle(image, (x_min, y_min), (x_max, y_max), color, 2)
@@ -98,7 +98,7 @@ def display_image(image_path, predictions):
 
 def main():
     # Specify your image path here
-    image_path = "C:/Users/justi/Downloads/parking_dataset/train_images/2012-10-31_14_03_19.jpg"
+    image_path = "C:/Users/justi/Downloads/parking_dataset/train_images/2013-01-17_17_20_13.jpg"
     
     # Make initial predictions on full image
     all_predictions = predict(image_path)
@@ -111,7 +111,7 @@ def main():
         # Combine all predictions
         all_predictions.extend(cropped_predictions)
     
-    # Save all predictions to text file
+    # Append all predictions to text file
     compile_data(image_path, all_predictions)
     
     # Display original image with all predictions
