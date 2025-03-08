@@ -14,6 +14,7 @@ CORS(app, resources={r"/api/*": {"origins": "http://localhost:5173"}})  # Explic
 
 
 
+
 # Configuration
 UPLOAD_FOLDER = 'uploads'
 RESULTS_FOLDER = 'results'
@@ -42,6 +43,26 @@ def log_detection_to_file(image_name, detections):
             # Format: image_name class_id confidence x_min y_min x_max y_max
             f.write(f"{image_name} {detection['class_id']} {detection['confidence']:.4f} "
                    f"{detection['bbox'][0]} {detection['bbox'][1]} {detection['bbox'][2]} {detection['bbox'][3]}\n")
+
+# Add rate limiting (install flask-limiter)
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per minute"]  # Adjust as needed
+)
+
+
+@limiter.limit("10 per second")  # Adjust based on your hardware
+
+@app.route('/api/simulation', methods=['GET'])
+def get_simulation_samples():
+    return jsonify({
+        'count': 5,  # Match number of sample images
+        'samples': [f'/samples/parking{i+1}.jpg' for i in range(5)]
+    })
 
 def analyze_parking_image(image_path, filename):
     """
