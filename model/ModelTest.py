@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision import transforms
 from PIL import Image
+from datetime import datetime
 
 
 def split_image_into_thirds(image_path, output_dir):
@@ -122,23 +123,38 @@ def merge_images(image_paths, output_path):
 
 
 # Main Pipeline
-image_path = "test_data/test_images/2012-09-11_15_36_32.jpg"  
+image_path = "test_data/test_images/2013-04-12_17_50_13.jpg"  
 output_dir = "Cropped_Images"
 model_path = "final_model.pth"
 
 
-cropped_images = split_image_into_thirds(image_path, output_dir)
-model = load_model(model_path)
-predictions = predict_images(model, cropped_images)
+date1 = "2012-12-05"
+date2 = image_path[22:32]
+date1_obj = datetime.strptime(date1, "%Y-%m-%d")
+date2_obj = datetime.strptime(date2, "%Y-%m-%d")
 
-for img_path in cropped_images:
-    base_name, ext = os.path.splitext(img_path)
+if date1_obj > date2_obj:
+    cropped_images = split_image_into_thirds(image_path, output_dir)
+    model = load_model(model_path)
+    predictions = predict_images(model, cropped_images)
+
+    for img_path in cropped_images:
+        base_name, ext = os.path.splitext(img_path)
+        annotated_path = f"{base_name}_annotated{ext}"  
+
+        if img_path in predictions and predictions[img_path]:  
+            draw_predictions(img_path, predictions[img_path], annotated_path)
+
+
+    annotated_images = [img.replace(".jpg", "_annotated.jpg") for img in cropped_images]
+    merged_output_path = "Cropped_Images/merged_annotated.jpg"
+    merge_images(annotated_images, merged_output_path)
+else:
+    model = load_model(model_path)
+    predictions = predict_images(model, [image_path])  
+
+    base_name, ext = os.path.splitext(image_path)
     annotated_path = f"{base_name}_annotated{ext}"  
 
-    if img_path in predictions and predictions[img_path]:  
-        draw_predictions(img_path, predictions[img_path], annotated_path)
-
-
-annotated_images = [img.replace(".jpg", "_annotated.jpg") for img in cropped_images]
-merged_output_path = "Cropped_Images/merged_annotated.jpg"
-merge_images(annotated_images, merged_output_path)
+    if image_path in predictions and predictions[image_path]:  
+        draw_predictions(image_path, predictions[image_path], annotated_path)
