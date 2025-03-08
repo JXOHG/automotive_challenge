@@ -57,24 +57,25 @@ model.to(device)
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def crop_image_if_needed(image, threshold=100, max_crops=1):
+def crop_image_if_needed(image, threshold=100, max_crops=1, initial_confidence_threshold=0.3):
     """
     Crop the image to focus on the parking area if too many detections are found.
-    Returns the cropped image and requires re-analysis.
+    Uses a lower confidence threshold for initial cropping to ensure all spots are included.
     """
     height, width = image.shape[:2]
     highest_y = 0  # Initialize to 0; we want the largest y_max (bottommost detection)
 
-    # Find the highest y-coordinate (y_max) among all detections
+    # Find the highest y-coordinate (y_max) among all detections with a lower confidence threshold
     detections = request.environ.get('current_detections', [])
     if detections and len(detections) > threshold:
         for detection in detections:
-            bbox = detection['bbox']
-            if bbox[3] > highest_y:  # Use the largest y_max (bottommost detection)
-                highest_y = bbox[3]
+            if detection['confidence'] >= initial_confidence_threshold:  # Lower threshold for cropping
+                bbox = detection['bbox']
+                if bbox[3] > highest_y:  # Use the largest y_max (bottommost detection)
+                    highest_y = bbox[3]
     
-    # Add padding to the crop
-    padding = 10
+    # Add more padding to ensure all spots are included
+    padding = 50  # Increased padding
     crop_height = min(highest_y + padding, height)
     
     if crop_height < height:  # Only crop if there's a meaningful reduction
@@ -196,7 +197,7 @@ def analyze_parking_image(file_data):
         if image is None:
             raise ValueError("Failed to decode image")
 
-        # Initial detection
+        # Initial detection with a lower confidence threshold for cropping
         input_tensor = preprocess_image(image)
         with torch.no_grad():
             predictions = model(input_tensor)[0]
@@ -205,8 +206,8 @@ def analyze_parking_image(file_data):
         labels = predictions['labels'].cpu().numpy()
         scores = predictions['scores'].cpu().numpy()
 
-        confidence_threshold = 0.5
-        valid_indices = scores >= confidence_threshold
+        initial_confidence_threshold = 0.3  # Lower threshold for cropping
+        valid_indices = scores >= initial_confidence_threshold
         boxes = boxes[valid_indices]
         labels = labels[valid_indices]
         scores = scores[valid_indices]
@@ -219,7 +220,7 @@ def analyze_parking_image(file_data):
                 'bbox': [int(x) for x in box]
             })
         
-        # Store initial detections in environment for cropping function
+        # Store initial detections for cropping
         request.environ['current_detections'] = detections
         
         # Crop if needed, then re-analyze once
@@ -235,7 +236,9 @@ def analyze_parking_image(file_data):
                 boxes = predictions['boxes'].cpu().numpy()
                 labels = predictions['labels'].cpu().numpy()
                 scores = predictions['scores'].cpu().numpy()
-
+                
+                # Use the stricter threshold for final detections
+                confidence_threshold = 0.5
                 valid_indices = scores >= confidence_threshold
                 boxes = boxes[valid_indices]
                 labels = labels[valid_indices]
