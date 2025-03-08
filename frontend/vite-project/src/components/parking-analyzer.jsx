@@ -2,7 +2,7 @@ import { useState } from "react"
 import { Upload, ImageIcon, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react'
 
 // Real API functions to interact with Flask backend
-const API_BASE_URL = "http://localhost:5000/api" // Change this to your Raspberry Pi's address
+const API_BASE_URL = "http://192.168.2.32:5000/api" // Change this to your Raspberry Pi's address
 
 // Function to send image to API for analysis
 // Function to send image to API for analysis
@@ -124,37 +124,40 @@ export function ParkingAnalyzer() {
   }
 
   // In the handleAnalyze function, add more logging:
-const handleAnalyze = async () => {
-  if (!file) return;
+  const handleAnalyze = async () => {
+    if (!file) return;
   
-  console.log("Starting analysis with file:", file.name);
-  setIsAnalyzing(true);
-  setProgress(0);
-  setError(null);
-  setApiStatus('sending');
+    console.log("Starting analysis with file:", file.name);
+    setIsAnalyzing(true);
+    setProgress(0);
+    setError(null);
+    setApiStatus('sending');
   
-  // Rest of the function remains the same...
+    // Add progress interval simulation
+    let progress = 0;
+    const progressInterval = setInterval(() => {
+      progress = Math.min(progress + 10, 90); // Cap at 90% until API responds
+      setProgress(progress);
+    }, 500);
   
-  try {
-    console.log("Calling analyzeImage function...");
-    const response = await analyzeImage(file);
-    console.log("Analysis completed successfully, results:", response);
-    
-    // Update progress to 100%
-    setProgress(100);
-    setApiStatus('complete');
-    
-    // Set results from API response
-    setResults(response.data);
-  } catch (error) {
-    console.error("Error in handleAnalyze:", error);
-    setError(error.message || "Failed to analyze image");
-    setApiStatus('error');
-  } finally {
-      clearInterval(progressInterval)
+    try {
+      console.log("Calling analyzeImage function...");
+      const response = await analyzeImage(file);
+      console.log("Analysis completed successfully, results:", response);
+  
+      // Final progress update
+      setProgress(100);
+      setApiStatus('complete');
+      setResults(response.data);
+    } catch (error) {
+      console.error("Error in handleAnalyze:", error);
+      setError(error.message || "Failed to analyze image");
+      setApiStatus('error');
+    } finally {
+      clearInterval(progressInterval);
       setTimeout(() => {
-        setIsAnalyzing(false)
-      }, 500) // Keep progress bar at 100% for a moment
+        setIsAnalyzing(false);
+      }, 500);
     }
   }
 
