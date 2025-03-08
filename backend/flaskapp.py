@@ -57,7 +57,7 @@ def save_image_temp(file_data, temp_path):
     return temp_path
 
 def get_parking_info_from_file(image_name):
-    """Read parking spot info from info.txt for the most recent entry of a given image name"""
+    """Read all parking spot info from info.txt for the most recent entry of a given image name."""
     if not os.path.exists(INFO_PATH):
         return None
     
@@ -68,9 +68,12 @@ def get_parking_info_from_file(image_name):
         base_name = os.path.splitext(image_name)[0]
         relevant_lines = [line for line in lines if line.startswith(base_name)]
         
+        if not relevant_lines:
+            return None
+        
         for line in relevant_lines:
             parts = line.split()
-            if len(parts) >= 8:  # Now includes timestamp
+            if len(parts) >= 8:  # Ensure line has all required fields
                 img_name, timestamp, confidence, class_id, x_min, y_min, x_max, y_max = parts[:8]
                 key = (img_name, timestamp)
                 if key not in detections_by_timestamp:
@@ -83,14 +86,11 @@ def get_parking_info_from_file(image_name):
                     'bbox': [int(x_min), int(y_min), int(x_max), int(y_max)]
                 })
     
-    if not detections_by_timestamp:
-        return None
-
-    # Find the most recent timestamp for this image name
-    latest_key = max(detections_by_timestamp.keys(), key=lambda x: x[1])  # Sort by timestamp
+    # Select the most recent timestamp
+    latest_key = max(detections_by_timestamp.keys(), key=lambda x: x[1])
     detections = detections_by_timestamp[latest_key]
 
-    # Calculate parking stats
+    # Calculate parking stats based on ALL detections
     total_spots = len(detections)
     filled_spots = sum(1 for d in detections if d['class_id'] == 2)
     empty_spots = sum(1 for d in detections if d['class_id'] == 1)
@@ -100,6 +100,8 @@ def get_parking_info_from_file(image_name):
         status = 'filled' if detection['class_id'] == 2 else 'empty'
         spots_status.append({'id': i + 1, 'status': status})
 
+    logger.info(f"Processed {image_name}: Total={total_spots}, Filled={filled_spots}, Empty={empty_spots}")
+    
     return {
         'total_spots': total_spots,
         'filled_spots': filled_spots,
@@ -107,7 +109,7 @@ def get_parking_info_from_file(image_name):
         'occupancy_rate': float((filled_spots / total_spots * 100) if total_spots > 0 else 0),
         'spots_status': spots_status,
         'detections': detections,
-        'timestamp': latest_key[1]  # Use the timestamp from the file
+        'timestamp': latest_key[1]
     }
 
 limiter = Limiter(
@@ -178,7 +180,8 @@ def analyze_video():
 
 def process_video(video_data, original_filename):
     results = []
-    cap = cv2.VideoCapture(video_data)
+    cap = cv2.VideoCapture()
+    cap.open(video_data)
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_interval = int(fps * 15)
 
@@ -230,7 +233,6 @@ def process_video(video_data, original_filename):
                     os.remove(temp_path)
             
             frame_count += 1
-            
     finally:
         cap.release()
         
@@ -271,8 +273,6 @@ def analyze_parking_image(file_data, original_filename):
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         
-        nparr = np.frombuffer(file_data, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         overlay_image = overlay_handler.create_overlay_image(file_data, detections, confidence_threshold=0.5)
         result['overlay_image'] = base64.b64encode(overlay_image).decode('utf-8')
         
@@ -315,12 +315,11 @@ def analyze_parking():
         if not results:
             return jsonify({'error': f'No data found in info.txt for {filename}'}), 404
         
-        # Generate overlay image
-        nparr = np.frombuffer(file_data, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        # Generate overlay image with the detections from info.txt
         overlay_image = overlay_handler.create_overlay_image(file_data, results['detections'], confidence_threshold=0.5)
         results['overlay_image'] = base64.b64encode(overlay_image).decode('utf-8')
         
+        logger.info(f"API Response: {results}")
         return jsonify(results)
     except Exception as e:
         logger.error(f'Error processing image: {str(e)}')
