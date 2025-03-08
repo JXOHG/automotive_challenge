@@ -5,42 +5,53 @@ import { Upload, ImageIcon, RefreshCw, CheckCircle, AlertCircle } from 'lucide-r
 const API_BASE_URL = "http://localhost:5000/api" // Change this to your Raspberry Pi's address
 
 // Function to send image to API for analysis
+// Function to send image to API for analysis
 async function analyzeImage(imageFile, locationId = "default") {
-  console.log("Sending image to API:", imageFile.name)
+  console.log("Starting API call to Flask backend...");
+  console.log(`Sending image to ${API_BASE_URL}/analyze:`, imageFile.name);
   
   // Create a FormData object to send the file
-  const formData = new FormData()
-  formData.append('file', imageFile)
-  formData.append('location_id', locationId)
+  const formData = new FormData();
+  formData.append('file', imageFile);
+  formData.append('location_id', locationId);
   
   try {
+    console.log("Making fetch request to API...");
     const response = await fetch(`${API_BASE_URL}/analyze`, {
       method: 'POST',
       body: formData,
-      // No Content-Type header - fetch sets it automatically with boundary for FormData
-    })
+    });
+    
+    console.log("API response status:", response.status);
     
     if (!response.ok) {
-      const errorData = await response.json()
-      throw new Error(errorData.error || "API request failed")
+      const errorData = await response.json();
+      console.error("API returned error:", errorData);
+      throw new Error(errorData.error || "API request failed");
     }
     
-    const data = await response.json()
-    return {
+    const data = await response.json();
+    console.log("Raw API response data:", data);
+    
+    // Convert API response to frontend format
+    const processedData = {
       success: true,
       data: {
         totalSpots: data.total_spots,
         availableSpots: data.empty_spots,
         occupiedSpots: data.filled_spots,
-        confidence: data.occupancy_rate, // Using occupancy rate as confidence for now
+        confidence: data.occupancy_rate,
         processingTime: 1.2, // Could add processing time to API response
-        // Convert the spots_status array to a spotMap array of booleans
+        // Convert spots_status array to spotMap array of booleans
         spotMap: data.spots_status.map(spot => spot.status === 'filled')
       }
-    }
+    };
+    
+    console.log("Processed frontend data:", processedData);
+    return processedData;
   } catch (error) {
-    console.error("API error:", error)
-    throw error
+    console.error("API request failed with error:", error);
+    throw error;
   }
 }
 
@@ -112,46 +123,34 @@ export function ParkingAnalyzer() {
     }
   }
 
-  const handleAnalyze = async () => {
-    if (!file) return
+  // In the handleAnalyze function, add more logging:
+const handleAnalyze = async () => {
+  if (!file) return;
+  
+  console.log("Starting analysis with file:", file.name);
+  setIsAnalyzing(true);
+  setProgress(0);
+  setError(null);
+  setApiStatus('sending');
+  
+  // Rest of the function remains the same...
+  
+  try {
+    console.log("Calling analyzeImage function...");
+    const response = await analyzeImage(file);
+    console.log("Analysis completed successfully, results:", response);
     
-    setIsAnalyzing(true)
-    setProgress(0)
-    setError(null)
-    setApiStatus('sending')
+    // Update progress to 100%
+    setProgress(100);
+    setApiStatus('complete');
     
-    // Simulate progress for better UX (since we can't get real-time progress from the API)
-    const progressInterval = setInterval(() => {
-      setProgress(prev => {
-        if (prev < 30) {
-          // Slow progress during "sending" phase
-          return prev + Math.random() * 5
-        } else if (prev < 90) {
-          // Faster progress during "processing" phase
-          setApiStatus('processing')
-          return prev + Math.random() * 10
-        } else {
-          // Slow down as we approach completion
-          return prev + Math.random() * 2
-        }
-      })
-    }, 300)
-    
-    try {
-      // Call real API with the image file
-      const response = await analyzeImage(file)
-      
-      // Update progress to 100%
-      setProgress(100)
-      setApiStatus('complete')
-      
-      // Set results from API response
-      setResults(response.data)
-    } catch (error) {
-      console.error("Error analyzing image:", error)
-      setError(error.message || "Failed to analyze image")
-      setApiStatus('error')
-    } finally {
+    // Set results from API response
+    setResults(response.data);
+  } catch (error) {
+    console.error("Error in handleAnalyze:", error);
+    setError(error.message || "Failed to analyze image");
+    setApiStatus('error');
+  } finally {
       clearInterval(progressInterval)
       setTimeout(() => {
         setIsAnalyzing(false)
