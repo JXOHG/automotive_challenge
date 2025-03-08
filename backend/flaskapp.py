@@ -14,11 +14,9 @@ import torch
 import base64
 from io import BytesIO
 
-# Import functions from newer.py
 from parking_spot_overlay import ParkingSpotOverlay
 from newer import predict, crop, compile_data
 
-# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -29,7 +27,6 @@ CORS(app, resources={
     }
 })
 
-# Configuration
 UPLOAD_FOLDER = 'uploads'
 RESULTS_FOLDER = 'results'
 DETECTION_LOG = 'detections.txt'
@@ -37,13 +34,13 @@ ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'mp4', 'avi', 'mov'}
 MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100MB
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, 'final_model.pth')
+INFO_PATH = os.path.join(BASE_DIR, 'info.txt')  # Path to info.txt
 
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(RESULTS_FOLDER, exist_ok=True)
 
-# Helper functions
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -54,23 +51,64 @@ def log_detection_to_file(image_name, detections):
                    f"{detection['bbox'][0]} {detection['bbox'][1]} {detection['bbox'][2]} {detection['bbox'][3]}\n")
 
 def save_image_temp(file_data, temp_path):
-    """Save image data to a temporary file for processing"""
     nparr = np.frombuffer(file_data, np.uint8)
     image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     cv2.imwrite(temp_path, image)
     return temp_path
 
-# Rate limiting
+def get_parking_info_from_file(image_name):
+    """Read parking spot info from info.txt for a given image name"""
+    if not os.path.exists(INFO_PATH):
+        return None
+    
+    detections = []
+    with open(INFO_PATH, 'r') as f:
+        lines = [line.strip() for line in f.readlines()]
+        # Filter lines for the specific image name (without extension)
+        base_name = os.path.splitext(image_name)[0]
+        relevant_lines = [line for line in lines if line.startswith(base_name)]
+        
+        for line in relevant_lines:
+            parts = line.split()
+            if len(parts) >= 7:  # Ensure line has all required fields
+                detections.append({
+                    'image_name': parts[0],
+                    'confidence': float(parts[1]),
+                    'class_id': int(parts[2]),
+                    'bbox': [int(parts[3]), int(parts[4]), int(parts[5]), int(parts[6])]
+                })
+    
+    if not detections:
+        return None
+
+    # Calculate parking stats
+    total_spots = len(detections)
+    filled_spots = sum(1 for d in detections if d['class_id'] == 2)  # 2 is "filled"
+    empty_spots = sum(1 for d in detections if d['class_id'] == 1)  # 1 is "empty"
+    
+    spots_status = []
+    for i, detection in enumerate(detections):
+        status = 'filled' if detection['class_id'] == 2 else 'empty'
+        spots_status.append({'id': i + 1, 'status': status})
+
+    return {
+        'total_spots': total_spots,
+        'filled_spots': filled_spots,
+        'empty_spots': empty_spots,
+        'occupancy_rate': float((filled_spots / total_spots * 100) if total_spots > 0 else 0),
+        'spots_status': spots_status,
+        'detections': detections,
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+
 limiter = Limiter(
     app=app,
     key_func=get_remote_address,
     default_limits=["500 per minute", "1000 per hour"]
 )
 
-# Initialize the overlay handler
 overlay_handler = ParkingSpotOverlay()
 
-# Error handlers
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'error': 'Resource not found'}), 404
@@ -85,7 +123,6 @@ def ratelimit_handler(e):
     logger.warning(f"Rate limit exceeded: {e.description}")
     return jsonify({'error': f'Rate limit exceeded: {e.description}'}), 429
 
-# API Routes
 @app.route('/api/simulation', methods=['GET'])
 def get_simulation_samples():
     return jsonify({
@@ -107,7 +144,7 @@ def analyze_video():
         return jsonify({'error': 'Invalid video format'}), 400
 
     try:
-        filename = secure_filename(file.filename)  # Sanitize original filename
+        filename = secure_filename(file.filename)
         file_data = file.read()
         nparr = np.frombuffer(file_data, np.uint8)
         results = process_video(nparr, filename)
@@ -134,7 +171,7 @@ def process_video(video_data, original_filename):
     results = []
     cap = cv2.VideoCapture(video_data)
     fps = cap.get(cv2.CAP_PROP_FPS)
-    frame_interval = int(fps * 15)  # Process every 15 seconds
+    frame_interval = int(fps * 15)
 
     try:
         frame_count = 0
@@ -144,46 +181,30 @@ def process_video(video_data, original_filename):
                 break
                 
             if frame_count % frame_interval == 0:
-                # Use original filename with frame number for uniqueness
                 base_name = os.path.splitext(original_filename)[0]
                 temp_path = os.path.join(UPLOAD_FOLDER, f'{base_name}_frame_{frame_count}.jpg')
                 cv2.imwrite(temp_path, frame)
                 
-                # Use predict function from newer.py
                 all_predictions = predict(temp_path)
-                
-                # Crop if needed
                 if len(all_predictions) >= 100:
                     cropped_path = crop(temp_path, all_predictions)
                     cropped_predictions = predict(cropped_path)
                     all_predictions.extend(cropped_predictions)
                 
-                # Convert predictions to API format
-                detections = []
-                for pred in all_predictions:
-                    detections.append({
-                        'class_id': pred['label'],
-                        'confidence': pred['confidence'],
-                        'bbox': [int(x) for x in pred['box'].tolist()]
-                    })
+                detections = [{'class_id': pred['label'], 'confidence': pred['confidence'], 'bbox': [int(x) for x in pred['box'].tolist()]} for pred in all_predictions]
                 
-                # Calculate occupancy
                 total_spots = len(detections)
-                filled_spots = sum(1 for d in detections if d['class_id'] == 2)  # 2 is "filled"
-                empty_spots = sum(1 for d in detections if d['class_id'] == 1)  # 1 is "empty"
+                filled_spots = sum(1 for d in detections if d['class_id'] == 2)
+                empty_spots = sum(1 for d in detections if d['class_id'] == 1)
 
-                spots_status = []
-                for i, detection in enumerate(detections):
-                    status = 'filled' if detection['class_id'] == 2 else 'empty'
-                    spots_status.append({'id': i + 1, 'status': status})
+                spots_status = [{'id': i + 1, 'status': 'filled' if d['class_id'] == 2 else 'empty'} for i, d in enumerate(detections)]
 
-                # Prepare frame result
                 _, buffer = cv2.imencode('.jpg', frame)
                 frame_data = buffer.tobytes()
                 frame_result = {
-                    'total_spots': int(total_spots),
-                    'filled_spots': int(filled_spots),
-                    'empty_spots': int(empty_spots),
+                    'total_spots': total_spots,
+                    'filled_spots': filled_spots,
+                    'empty_spots': empty_spots,
                     'occupancy_rate': float((filled_spots / total_spots * 100) if total_spots > 0 else 0),
                     'spots_status': spots_status,
                     'detections': detections,
@@ -192,12 +213,10 @@ def process_video(video_data, original_filename):
                 }
                 results.append(frame_result)
                 
-                # Log detections with original filename + frame number
                 frame_name = f"{base_name}_frame_{frame_count}"
                 log_detection_to_file(frame_name, detections)
-                compile_data(temp_path, all_predictions)  # Use temp_path which includes original filename
+                compile_data(temp_path, all_predictions)
                 
-                # Clean up temporary file
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
             
@@ -212,66 +231,44 @@ def analyze_parking_image(file_data, original_filename):
     try:
         start_time = time.time()
         
-        # Use original filename for temporary file
         base_name = os.path.splitext(original_filename)[0]
         temp_path = os.path.join(UPLOAD_FOLDER, f'{base_name}.jpg')
         save_image_temp(file_data, temp_path)
         
-        # Use predict function from newer.py
         all_predictions = predict(temp_path)
-        
-        # Crop if needed
         if len(all_predictions) >= 100:
             cropped_path = crop(temp_path, all_predictions)
             cropped_predictions = predict(cropped_path)
             all_predictions.extend(cropped_predictions)
         
-        # Convert predictions to API format
-        detections = []
-        for pred in all_predictions:
-            detections.append({
-                'class_id': pred['label'],
-                'confidence': pred['confidence'],
-                'bbox': [int(x) for x in pred['box'].tolist()]
-            })
+        detections = [{'class_id': pred['label'], 'confidence': pred['confidence'], 'bbox': [int(x) for x in pred['box'].tolist()]} for pred in all_predictions]
         
-        # Calculate occupancy
         total_spots = len(detections)
-        filled_spots = sum(1 for d in detections if d['class_id'] == 2)  # 2 is "filled"
-        empty_spots = sum(1 for d in detections if d['class_id'] == 1)  # 1 is "empty"
+        filled_spots = sum(1 for d in detections if d['class_id'] == 2)
+        empty_spots = sum(1 for d in detections if d['class_id'] == 1)
 
-        spots_status = []
-        for i, detection in enumerate(detections):
-            status = 'filled' if detection['class_id'] == 2 else 'empty'
-            spots_status.append({'id': i + 1, 'status': status})
+        spots_status = [{'id': i + 1, 'status': 'filled' if d['class_id'] == 2 else 'empty'} for i, d in enumerate(detections)]
 
-        # Log detections with original filename
         log_detection_to_file(base_name, detections)
-        compile_data(temp_path, all_predictions)  # Use temp_path which includes original filename
+        compile_data(temp_path, all_predictions)
 
         result = {
-            'total_spots': int(total_spots),
-            'filled_spots': int(filled_spots),
-            'empty_spots': int(empty_spots),
+            'total_spots': total_spots,
+            'filled_spots': filled_spots,
+            'empty_spots': empty_spots,
             'occupancy_rate': float((filled_spots / total_spots * 100) if total_spots > 0 else 0),
             'spots_status': spots_status,
             'detections': detections,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         
-        # Generate overlay image
         nparr = np.frombuffer(file_data, np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        overlay_image = overlay_handler.create_overlay_image(
-            file_data,
-            detections,
-            confidence_threshold=0.5
-        )
+        overlay_image = overlay_handler.create_overlay_image(file_data, detections, confidence_threshold=0.5)
         result['overlay_image'] = base64.b64encode(overlay_image).decode('utf-8')
         
         logger.info(f"Image processed in {time.time() - start_time:.2f} seconds with {total_spots} spots")
         
-        # Clean up temporary file
         if os.path.exists(temp_path):
             os.remove(temp_path)
         
@@ -280,16 +277,9 @@ def analyze_parking_image(file_data, original_filename):
         logger.error(f'Image analysis error: {str(e)}')
         raise
 
-@app.route('/videos/<path:filename>')
-def serve_video(filename):
-    return send_from_directory(os.path.join(app.static_folder, 'videos'), filename)
-
 @app.route('/api/health', methods=['GET'])
 def health_check():
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    })
+    return jsonify({'status': 'healthy', 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')})
 
 @app.route('/api/analyze', methods=['POST'])
 @limiter.limit("10 per second")
@@ -305,14 +295,32 @@ def analyze_parking():
         return jsonify({'error': 'Invalid file type'}), 400
 
     try:
-        filename = secure_filename(file.filename)  # Sanitize original filename
+        filename = secure_filename(file.filename)
         file_data = file.read()
-        results = analyze_parking_image(file_data, filename)
+        
+        # First, process the image and save to info.txt
+        analyze_parking_image(file_data, filename)
+        
+        # Then, read the results from info.txt
+        results = get_parking_info_from_file(filename)
+        if not results:
+            return jsonify({'error': f'No data found in info.txt for {filename}'}), 404
+        
+        # Generate overlay image (since info.txt doesn't store this)
+        nparr = np.frombuffer(file_data, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        overlay_image = overlay_handler.create_overlay_image(file_data, results['detections'], confidence_threshold=0.5)
+        results['overlay_image'] = base64.b64encode(overlay_image).decode('utf-8')
         
         return jsonify(results)
     except Exception as e:
         logger.error(f'Error processing image: {str(e)}')
         return jsonify({'error': 'Failed to process image'}), 500
+
+# Other endpoints remain unchanged...
+@app.route('/videos/<path:filename>')
+def serve_video(filename):
+    return send_from_directory(os.path.join(app.static_folder, 'videos'), filename)
 
 @app.route('/api/statistics', methods=['GET'])
 def get_statistics():
@@ -325,22 +333,17 @@ def get_statistics():
     
     stats = {
         'location_id': location_id,
-        'period': {
-            'start': start_date or 'all time',
-            'end': end_date or 'current date'
-        },
+        'period': {'start': start_date or 'all time', 'end': end_date or 'current date'},
         'average_occupancy': 65.3,
         'peak_hours': ['08:00-09:00', '17:00-18:00'],
         'lowest_occupancy_hours': ['03:00-04:00', '22:00-23:00'],
         'total_records': 287
     }
-    
     return jsonify(stats)
 
 @app.route('/api/parking_status', methods=['GET'])
 def get_current_status():
     location_id = request.args.get('location_id')
-    
     if not location_id:
         return jsonify({'error': 'location_id parameter is required'}), 400
     
@@ -352,14 +355,12 @@ def get_current_status():
         'occupancy_rate': 60.0,
         'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }
-    
     return jsonify(status)
 
 @app.route('/api/detections', methods=['GET'])
 def get_detections():
     try:
         limit = int(request.args.get('limit', 100))
-        
         if not os.path.exists(os.path.join(RESULTS_FOLDER, DETECTION_LOG)):
             return jsonify({'error': 'No detections recorded yet'}), 404
         
