@@ -15,7 +15,7 @@ in_features = model.roi_heads.box_predictor.cls_score.in_features
 model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 model.roi_heads.detections_per_img = 500
 
-model.load_state_dict(torch.load("C:\\Users\\rayta\\Documents\\AIC\\final_model.pth", map_location=torch.device('cpu')))
+model.load_state_dict(torch.load("C:\\Users\\rayta\\Documents\\AIC\\final_model.pth", map_location=torch.device('cpu'))) # The model, change path
 model.eval() 
 
 transform = transforms.Compose([
@@ -79,10 +79,10 @@ def compile_data(image_path):
         f.write(f'{base_name} {prediction["confidence"]} {prediction["label"]} {x_min} {y_min} {x_max} {y_max}\n') 
     f.close()   
     
-image_path = "C:\\Users\\rayta\\Documents\\AIC\\parking_test_data\\test_data\\test_images\\2012-09-11_15_36_32.jpg"
+image_path = "C:\\Users\\rayta\\Documents\\AIC\\parking_test_data\\test_data\\test_images\\2012-09-11_15_36_32.jpg" # Change to whatever we need to analyze
 predict(image_path)
 if len(predictions) >= 100:
     cropped_path = crop(image_path)
     predict(cropped_path)
 compile_data(image_path)
-display_image(image_path)
+# display_image(image_path)
