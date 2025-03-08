@@ -10,9 +10,9 @@ import {
   EyeOff
 } from "lucide-react";
 
-const API_BASE_URL = "http://192.168.137.135:5000/api"; // Backend API
-const SIMULATOR_BASE_URL = "http://172.30.179.110:5001"; // Simulator
-const ANALYSIS_POLL_INTERVAL = 5000; // 5 seconds
+const API_BASE_URL = "http://192.168.137.135:5000/api";
+const SIMULATOR_BASE_URL = "http://172.30.179.110:5001";
+const ANALYSIS_POLL_INTERVAL = 5000;
 
 function cn(...classes) {
   return classes.filter(Boolean).join(" ");
@@ -35,7 +35,6 @@ export function ParkingAnalyzer() {
   const pollIntervalRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // Check API health on component mount
   useEffect(() => {
     const checkHealth = async (retries = 3, delay = 2000) => {
       for (let i = 0; i < retries; i++) {
@@ -57,7 +56,6 @@ export function ParkingAnalyzer() {
     checkHealth();
   }, []);
 
-  // Handle live mode toggling
   useEffect(() => {
     if (liveMode) {
       startLiveMode();
@@ -67,18 +65,14 @@ export function ParkingAnalyzer() {
     return () => stopLiveMode();
   }, [liveMode]);
 
-  // Update video feed URL when showOverlay changes in live mode
   useEffect(() => {
     if (liveMode && videoRef.current) {
       videoRef.current.src = `${SIMULATOR_BASE_URL}/video_feed?showOverlay=${showOverlay}`;
     }
   }, [showOverlay, liveMode]);
 
-  // Start live mode polling for analysis results
   const startLiveMode = () => {
     setIsStreamLoaded(false);
-    
-    // Start polling for analysis results from /current_analysis
     pollIntervalRef.current = setInterval(async () => {
       try {
         const response = await fetch(`${SIMULATOR_BASE_URL}/current_analysis`);
@@ -100,7 +94,6 @@ export function ParkingAnalyzer() {
     }, ANALYSIS_POLL_INTERVAL);
   };
 
-  // Stop live mode and clean up
   const stopLiveMode = () => {
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
@@ -110,7 +103,6 @@ export function ParkingAnalyzer() {
     setIsStreamLoaded(false);
   };
 
-  // Handle image analysis
   async function analyzeImage(imageFile) {
     const formData = new FormData();
     formData.append("file", imageFile);
@@ -123,13 +115,14 @@ export function ParkingAnalyzer() {
       });
 
       if (!response.ok) throw new Error("Analysis failed");
-      return await response.json();
+      const data = await response.json();
+      console.log("Data pulled from info.txt:", data); // Log to confirm source
+      return data;
     } catch (error) {
       if (error.name !== "AbortError") throw error;
     }
   }
 
-  // Handle image upload from file input
   const handleImageUpload = (e) => {
     setLiveMode(false);
     const file = e.target.files?.[0];
@@ -143,7 +136,6 @@ export function ParkingAnalyzer() {
     setError(null);
   };
 
-  // Handle analyze button click
   const handleAnalyze = async () => {
     setIsAnalyzing(true);
     setError(null);
@@ -164,7 +156,6 @@ export function ParkingAnalyzer() {
     }
   };
 
-  // Reset analysis state
   const resetAnalysis = () => {
     setImage(null);
     setFile(null);
@@ -172,14 +163,12 @@ export function ParkingAnalyzer() {
     setError(null);
   };
 
-  // Handle select image button click
   const handleSelectImageClick = () => {
     fileInputRef.current?.click();
   };
 
   return (
     <div className="upload-container">
-      {/* API Health Status */}
       {apiHealthy === null && (
         <div className="api-warning">
           <RefreshCw className="animate-spin warning-icon" />
@@ -193,7 +182,6 @@ export function ParkingAnalyzer() {
         </div>
       )}
 
-      {/* Controls */}
       <div className="simulation-controls">
         <button
           onClick={() => setLiveMode(!liveMode)}
@@ -205,11 +193,9 @@ export function ParkingAnalyzer() {
         </button>
       </div>
 
-      {/* Live Feed Section */}
       {liveMode ? (
         <div className="live-feed-container">
           <div className="live-feed-card">
-            {/* The video feed */}
             <div className="video-container">
               <img
                 ref={videoRef}
@@ -222,7 +208,6 @@ export function ParkingAnalyzer() {
                   setLiveMode(false);
                 }}
               />
-              
               {!isStreamLoaded && (
                 <div className="stream-loading">
                   <RefreshCw className="animate-spin" />
@@ -230,8 +215,6 @@ export function ParkingAnalyzer() {
                 </div>
               )}
             </div>
-            
-            {/* Overlay toggle and live results */}
             <div className="live-controls">
               <button 
                 onClick={() => setShowOverlay(!showOverlay)} 
@@ -250,7 +233,6 @@ export function ParkingAnalyzer() {
                 )}
               </button>
             </div>
-            
             {liveResults ? (
               <div className="live-results-overlay">
                 <div className="stats-panel">
@@ -300,7 +282,6 @@ export function ParkingAnalyzer() {
           </div>
         </div>
       ) : (
-        /* Image Upload Section */
         <div className="upload-section">
           {!image ? (
             <div className="upload-card">
@@ -332,11 +313,13 @@ export function ParkingAnalyzer() {
           ) : (
             <div className="analysis-section">
               <div className="image-preview-card">
-                <img 
-                  src={showOverlay && results?.overlayImage ? results.overlayImage : image} 
-                  alt="Uploaded preview" 
-                  className="preview-image" 
-                />
+                <div className="image-wrapper">
+                  <img 
+                    src={showOverlay && results?.overlayImage ? results.overlayImage : image} 
+                    alt="Uploaded preview" 
+                    className="preview-image" 
+                  />
+                </div>
                 <div className="preview-actions">
                   <button onClick={resetAnalysis} className="secondary-button">
                     Upload New Image
@@ -375,8 +358,6 @@ export function ParkingAnalyzer() {
                   </button>
                 </div>
               </div>
-
-              {/* Analysis Results */}
               {(results || error) && (
                 <div className="analysis-results">
                   {error ? (
@@ -421,6 +402,17 @@ export function ParkingAnalyzer() {
           )}
         </div>
       )}
+      <style jsx>{`
+        .image-wrapper {
+          max-width: 100%;
+          overflow: auto;
+        }
+        .preview-image {
+          max-width: 100%;
+          height: auto;
+          display: block;
+        }
+      `}</style>
     </div>
   );
 }

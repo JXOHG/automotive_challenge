@@ -31,10 +31,10 @@ UPLOAD_FOLDER = 'uploads'
 RESULTS_FOLDER = 'results'
 DETECTION_LOG = 'detections.txt'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'mp4', 'avi', 'mov'}
-MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100MB
+MAX_CONTENT_LENGTH = 100 * 1024 * 1024
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, 'final_model.pth')
-INFO_PATH = os.path.join(BASE_DIR, 'info.txt')  # Path to info.txt
+INFO_PATH = os.path.join(BASE_DIR, 'info.txt')
 
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
@@ -57,34 +57,43 @@ def save_image_temp(file_data, temp_path):
     return temp_path
 
 def get_parking_info_from_file(image_name):
-    """Read parking spot info from info.txt for a given image name"""
+    """Read parking spot info from info.txt for the most recent entry of a given image name"""
     if not os.path.exists(INFO_PATH):
         return None
     
-    detections = []
+    # Group detections by image name and timestamp
+    detections_by_timestamp = {}
     with open(INFO_PATH, 'r') as f:
         lines = [line.strip() for line in f.readlines()]
-        # Filter lines for the specific image name (without extension)
         base_name = os.path.splitext(image_name)[0]
         relevant_lines = [line for line in lines if line.startswith(base_name)]
         
         for line in relevant_lines:
             parts = line.split()
-            if len(parts) >= 7:  # Ensure line has all required fields
-                detections.append({
-                    'image_name': parts[0],
-                    'confidence': float(parts[1]),
-                    'class_id': int(parts[2]),
-                    'bbox': [int(parts[3]), int(parts[4]), int(parts[5]), int(parts[6])]
+            if len(parts) >= 8:  # Now includes timestamp
+                img_name, timestamp, confidence, class_id, x_min, y_min, x_max, y_max = parts[:8]
+                key = (img_name, timestamp)
+                if key not in detections_by_timestamp:
+                    detections_by_timestamp[key] = []
+                detections_by_timestamp[key].append({
+                    'image_name': img_name,
+                    'timestamp': timestamp,
+                    'confidence': float(confidence),
+                    'class_id': int(class_id),
+                    'bbox': [int(x_min), int(y_min), int(x_max), int(y_max)]
                 })
     
-    if not detections:
+    if not detections_by_timestamp:
         return None
+
+    # Find the most recent timestamp for this image name
+    latest_key = max(detections_by_timestamp.keys(), key=lambda x: x[1])  # Sort by timestamp
+    detections = detections_by_timestamp[latest_key]
 
     # Calculate parking stats
     total_spots = len(detections)
-    filled_spots = sum(1 for d in detections if d['class_id'] == 2)  # 2 is "filled"
-    empty_spots = sum(1 for d in detections if d['class_id'] == 1)  # 1 is "empty"
+    filled_spots = sum(1 for d in detections if d['class_id'] == 2)
+    empty_spots = sum(1 for d in detections if d['class_id'] == 1)
     
     spots_status = []
     for i, detection in enumerate(detections):
@@ -98,7 +107,7 @@ def get_parking_info_from_file(image_name):
         'occupancy_rate': float((filled_spots / total_spots * 100) if total_spots > 0 else 0),
         'spots_status': spots_status,
         'detections': detections,
-        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        'timestamp': latest_key[1]  # Use the timestamp from the file
     }
 
 limiter = Limiter(
@@ -298,15 +307,15 @@ def analyze_parking():
         filename = secure_filename(file.filename)
         file_data = file.read()
         
-        # First, process the image and save to info.txt
+        # Process the image and save to info.txt
         analyze_parking_image(file_data, filename)
         
-        # Then, read the results from info.txt
+        # Read the results from info.txt
         results = get_parking_info_from_file(filename)
         if not results:
             return jsonify({'error': f'No data found in info.txt for {filename}'}), 404
         
-        # Generate overlay image (since info.txt doesn't store this)
+        # Generate overlay image
         nparr = np.frombuffer(file_data, np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         overlay_image = overlay_handler.create_overlay_image(file_data, results['detections'], confidence_threshold=0.5)
@@ -317,7 +326,6 @@ def analyze_parking():
         logger.error(f'Error processing image: {str(e)}')
         return jsonify({'error': 'Failed to process image'}), 500
 
-# Other endpoints remain unchanged...
 @app.route('/videos/<path:filename>')
 def serve_video(filename):
     return send_from_directory(os.path.join(app.static_folder, 'videos'), filename)
