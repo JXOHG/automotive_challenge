@@ -3,14 +3,15 @@ import { Upload, ImageIcon, RefreshCw, CheckCircle, AlertCircle, Video, CameraOf
 
 const API_BASE_URL = "http://192.168.2.32:5000/api";
 const SAMPLE_IMAGES = [
-  "/samples/parking1.jpg",
-  "/samples/parking2.jpg",
-  "/samples/parking3.jpg",
-  "/samples/parking4.jpg",
-  "/samples/parking5.jpg",
+  "parking1.jpg",
+  "parking2.jpg",
+  "parking3.jpg",
+  "parking4.jpg",
+  "parking5.jpg",
 ];
 
 async function analyzeImage(imageFile, locationId = "default") {
+  console.log("Starting API call to Flask backend...");
   const formData = new FormData();
   formData.append("file", imageFile);
   formData.append("location_id", locationId);
@@ -67,8 +68,6 @@ export function ParkingAnalyzer() {
   const [apiHealthy, setApiHealthy] = useState(null);
   const [liveMode, setLiveMode] = useState(false);
   const [currentSampleIndex, setCurrentSampleIndex] = useState(0);
-  const [simulationHistory, setSimulationHistory] = useState([]);
-  const [currentFrame, setCurrentFrame] = useState(null);
 
   useEffect(() => {
     const checkHealth = async () => {
@@ -81,39 +80,32 @@ export function ParkingAnalyzer() {
   useEffect(() => {
     let interval;
     if (liveMode && apiHealthy) {
-      interval = setInterval(async () => {
+      interval = setInterval(() => {
         const nextIndex = (currentSampleIndex + 1) % SAMPLE_IMAGES.length;
         setCurrentSampleIndex(nextIndex);
 
-        try {
-          const imgPath = SAMPLE_IMAGES[nextIndex];
-          const response = await fetch(imgPath);
-          const blob = await response.blob();
-          const simulatedFile = new File([blob], `sample_${nextIndex}.jpg`, {
-            type: "image/jpeg",
+        fetch(SAMPLE_IMAGES[nextIndex])
+          .then((res) => res.blob())
+          .then((blob) => {
+            const simulatedFile = new File([blob], `sample_${nextIndex}.jpg`, {
+              type: "image/jpeg",
+            });
+            handleAutoAnalyze(simulatedFile);
           });
-
-          const analysis = await analyzeImage(simulatedFile);
-          
-          setCurrentFrame({
-            image: URL.createObjectURL(blob),
-            results: analysis.data,
-            timestamp: new Date().toLocaleTimeString(),
-          });
-
-          setSimulationHistory(prev => [
-            { image: URL.createObjectURL(blob), results: analysis.data },
-            ...prev.slice(0, 4)
-          ]);
-
-        } catch (error) {
-          console.error("Simulation error:", error);
-        }
-      }, 3000);
-
-      return () => clearInterval(interval);
+      }, 5000);
     }
+    return () => clearInterval(interval);
   }, [liveMode, currentSampleIndex, apiHealthy]);
+
+  const handleAutoAnalyze = async (simulatedFile) => {
+    try {
+      const response = await analyzeImage(simulatedFile);
+      setResults(response.data);
+      setError(null);
+    } catch (error) {
+      console.error("Simulation error:", error);
+    }
+  };
 
   const handleImageUpload = (e) => {
     if (e.target.files && e.target.files[0]) {
@@ -176,7 +168,7 @@ export function ParkingAnalyzer() {
       {apiHealthy === false && (
         <div className="api-warning">
           <AlertCircle className="warning-icon" />
-          <span>API server is not responding. Check connection to Raspberry Pi.</span>
+          <span>API server is not responding. Check your connection to the Raspberry Pi.</span>
         </div>
       )}
 
@@ -186,75 +178,14 @@ export function ParkingAnalyzer() {
           className={cn("simulation-button", liveMode && "active")}
         >
           {liveMode ? <CameraOff size={18} /> : <Video size={18} />}
-          {liveMode ? " Stop Live Feed" : " Start Live Feed"}
+          {liveMode ? " Stop Simulation" : " Start Live Simulation"}
         </button>
         <span className="simulation-status">
-          {liveMode && `Live View • ${currentSampleIndex + 1}/${SAMPLE_IMAGES.length} Cameras`}
+          {liveMode && `Sample ${currentSampleIndex + 1}/${SAMPLE_IMAGES.length}`}
         </span>
       </div>
 
-      {liveMode ? (
-        <div className="live-feed-container">
-          <div className="main-feed">
-            <h3>Real-time Parking Monitoring</h3>
-            {currentFrame ? (
-              <div className="live-frame">
-                <div className="feed-header">
-                  <span className="feed-timestamp">
-                    {currentFrame.timestamp}
-                  </span>
-                  <span className="feed-status">
-                    {currentFrame.results.availableSpots} spots available
-                  </span>
-                </div>
-                <img
-                  src={currentFrame.image}
-                  alt="Live camera feed"
-                  className="live-image"
-                />
-                <div className="live-overlay">
-                  {currentFrame.results.spotMap.map((occupied, index) => (
-                    <div
-                      key={index}
-                      className={cn(
-                        "spot-marker",
-                        occupied ? "occupied" : "available"
-                      )}
-                      style={{
-                        left: `${(index % 10) * 10 + 5}%`,
-                        top: `${Math.floor(index / 10) * 15 + 10}%`
-                      }}
-                    >
-                      {index + 1}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="feed-loading">
-                <RefreshCw className="animate-spin" />
-                <span>Connecting to live feed...</span>
-              </div>
-            )}
-          </div>
-
-          <div className="feed-history">
-            {simulationHistory.map((frame, idx) => (
-              <div key={idx} className="history-frame">
-                <img
-                  src={frame.image}
-                  alt={`Historical frame ${idx}`}
-                  className="history-image"
-                />
-                <div className="history-stats">
-                  <div>{frame.results.availableSpots} Available</div>
-                  <div>{frame.results.occupiedSpots} Occupied</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : (
+      {!liveMode && (
         <>
           {!image ? (
             <div className="upload-box">
@@ -262,7 +193,7 @@ export function ParkingAnalyzer() {
                 <ImageIcon className="upload-icon" />
                 <div className="upload-text">
                   <label htmlFor="image-upload" className="upload-label">
-                    <span className="upload-message">Upload parking image</span>
+                    <span className="upload-message">Upload a parking lot image</span>
                     <button className="upload-button">
                       <Upload className="button-icon" />
                       Select Image
@@ -276,7 +207,7 @@ export function ParkingAnalyzer() {
                       onChange={handleImageUpload}
                     />
                   </label>
-                  <p className="upload-info">PNG, JPG up to 10MB</p>
+                  <p className="upload-info">PNG, JPG, GIF up to 10MB</p>
                 </div>
               </div>
             </div>
@@ -390,6 +321,42 @@ export function ParkingAnalyzer() {
             </div>
           )}
         </>
+      )}
+
+      {liveMode && (
+        <div className="simulation-view">
+          <h3>Live Simulation Preview</h3>
+          {results ? (
+            <div className="live-results">
+              <div className="live-preview">
+                <img
+                  src={SAMPLE_IMAGES[currentSampleIndex]}
+                  alt="Live simulation"
+                  className="simulation-image"
+                />
+              </div>
+              <div className="stats-container">
+                <div className="stat-card total">
+                  <div className="stat-label">Total Spots</div>
+                  <div className="stat-value">{results.totalSpots}</div>
+                </div>
+                <div className="stat-card available">
+                  <div className="stat-label">Available</div>
+                  <div className="stat-value">{results.availableSpots}</div>
+                </div>
+                <div className="stat-card occupied">
+                  <div className="stat-label">Occupied</div>
+                  <div className="stat-value">{results.occupiedSpots}</div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="simulation-loading">
+              <RefreshCw className="animate-spin" />
+              <span>Initializing live simulation...</span>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
