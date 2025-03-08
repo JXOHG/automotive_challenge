@@ -73,6 +73,7 @@ class ParkingSpotOverlay:
         except Exception as e:
             logger.error(f"Error drawing detections: {str(e)}")
             return image
+
     def create_overlay_image(self, image_data, detections, confidence_threshold=0.5):
         try:
             nparr = np.frombuffer(image_data, np.uint8)

@@ -178,7 +178,8 @@ def analyze_video():
 
 def process_video(video_data, original_filename):
     results = []
-    cap = cv2.VideoCapture(video_data)
+    cap = cv2.VideoCapture()
+    cap.open(BytesIO(video_data.tobytes()))  # Adjusted for video data
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_interval = int(fps * 15)
 
@@ -271,8 +272,6 @@ def analyze_parking_image(file_data, original_filename):
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         
-        nparr = np.frombuffer(file_data, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         overlay_image = overlay_handler.create_overlay_image(file_data, detections, confidence_threshold=0.5)
         result['overlay_image'] = base64.b64encode(overlay_image).decode('utf-8')
         
@@ -315,9 +314,7 @@ def analyze_parking():
         if not results:
             return jsonify({'error': f'No data found in info.txt for {filename}'}), 404
         
-        # Generate overlay image
-        nparr = np.frombuffer(file_data, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        # Generate overlay image with correct arguments
         overlay_image = overlay_handler.create_overlay_image(file_data, results['detections'], confidence_threshold=0.5)
         results['overlay_image'] = base64.b64encode(overlay_image).decode('utf-8')
         
